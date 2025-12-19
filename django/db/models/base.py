@@ -2,8 +2,10 @@ import copy
 import inspect
 import warnings
 from collections import defaultdict
+from dataclasses import dataclass, field
 from functools import partialmethod
 from itertools import chain
+from typing import Any
 
 from asgiref.sync import sync_to_async
 
@@ -67,6 +69,35 @@ class Deferred:
 
 
 DEFERRED = Deferred()
+
+
+@dataclass
+class SaveOperation:
+    """
+    Holds all the data needed to execute a save operation for a single table.
+
+    This separates query preparation from execution, enabling:
+    - Better async support (preparation can happen outside transactions)
+    - Clearer code structure with distinct prepare and execute phases
+    - Potential for future optimizations like batching
+    """
+
+    cls: type  # The model class for this table
+    is_insert: bool  # True for INSERT, False for UPDATE (may fall back to insert)
+    # Fields and values for the operation
+    fields: list = field(default_factory=list)
+    values: list = field(default_factory=list)
+    returning_fields: list = field(default_factory=list)
+    # For updates
+    pk_val: Any = None
+    forced_update: bool = False
+    # For inserts
+    raw: bool = False
+    # Fallback insert data (for update operations that may need to insert)
+    insert_fields: list = field(default_factory=list)
+    insert_returning_fields: list = field(default_factory=list)
+    # Parent link field to update after parent save (for MTI)
+    parent_link_field: Any = None
 
 
 def subclass_exception(name, bases, module, attached_to):
@@ -955,6 +986,9 @@ class Model(AltersData, metaclass=ModelBase):
         The 'raw' argument is telling save_base not to save any parent
         models and not to do any changes to the values before save. This
         is used by fixture loading.
+
+        This method uses a prepare/execute pattern to minimize the time spent
+        holding database transactions open, which improves async readiness.
         """
         using = using or router.db_for_write(self.__class__, instance=self)
         assert not (force_insert and (force_update or update_fields))
@@ -972,27 +1006,33 @@ class Model(AltersData, metaclass=ModelBase):
                 using=using,
                 update_fields=update_fields,
             )
+
+        # Phase 1: Prepare all save operations (field value computation, etc.)
+        # This happens outside the transaction to minimize lock time.
+        operations = self._prepare_save_operations(
+            cls=cls,
+            raw=raw,
+            force_insert=force_insert,
+            force_update=force_update,
+            using=using,
+            update_fields=update_fields,
+        )
+
+        # Phase 2: Execute all operations in a transaction
         # A transaction isn't needed if one query is issued.
-        if meta.parents:
+        if len(operations) > 1:
             context_manager = transaction.atomic(using=using, savepoint=False)
         else:
             context_manager = transaction.mark_for_rollback_on_error(using=using)
+
         with context_manager:
-            parent_inserted = False
-            if not raw:
-                # Validate force insert only when parents are inserted.
-                force_insert = self._validate_force_insert(force_insert)
-                parent_inserted = self._save_parents(
-                    cls, using, update_fields, force_insert
-                )
-            updated = self._save_table(
-                raw,
-                cls,
-                force_insert or parent_inserted,
-                force_update,
-                using,
-                update_fields,
-            )
+            self._execute_save_operations(operations, using, update_fields)
+
+        # Determine if this was an insert (for the post_save signal)
+        # The last operation is for the main table
+        main_op = operations[-1][0] if operations else None
+        updated = main_op is not None and not main_op.is_insert
+
         # Store the database on which the object was saved
         self._state.db = using
         # Once saved, this is no longer a to-be-added instance.
@@ -1254,6 +1294,344 @@ class Model(AltersData, metaclass=ModelBase):
         # resolved values but couldn't as they are effectively stale.
         for field in returning_fields_iter:
             self.__dict__.pop(field.attname, None)
+
+    def _prepare_table_save(
+        self,
+        raw=False,
+        cls=None,
+        force_insert=False,
+        force_update=False,
+        using=None,
+        update_fields=None,
+    ):
+        """
+        Prepare a SaveOperation for a single table without executing any queries.
+
+        This method extracts all the preparation logic from _save_table, allowing
+        the actual database operations to be deferred and executed in a tight
+        transaction block.
+
+        Returns a SaveOperation dataclass or None if no save is needed.
+        """
+        meta = cls._meta
+        pk_fields = meta.pk_fields
+        non_pks_non_generated = [
+            f
+            for f in meta.local_concrete_fields
+            if f not in pk_fields and not f.generated
+        ]
+
+        if update_fields:
+            non_pks_non_generated = [
+                f
+                for f in non_pks_non_generated
+                if f.name in update_fields or f.attname in update_fields
+            ]
+
+        if not self._is_pk_set(meta):
+            pk_val = meta.pk.get_pk_value_on_save(self)
+            setattr(self, meta.pk.attname, pk_val)
+        pk_set = self._is_pk_set(meta)
+        if not pk_set and (force_update or update_fields):
+            raise ValueError("Cannot force an update in save() with no primary key.")
+
+        # Skip an UPDATE when adding an instance and primary key has a default.
+        if (
+            not raw
+            and not force_insert
+            and not force_update
+            and self._state.adding
+            and all(f.has_default() or f.has_db_default() for f in meta.pk_fields)
+        ):
+            force_insert = True
+
+        # Determine if this will be an update or insert
+        is_update = pk_set and not force_insert
+
+        if is_update:
+            # Prepare UPDATE operation
+            values = [
+                (
+                    f,
+                    None,
+                    (getattr(self, f.attname) if raw else f.pre_save(self, False)),
+                )
+                for f in non_pks_non_generated
+            ]
+            forced_update = update_fields or force_update
+            pk_val = self._get_pk_val(meta)
+            returning_fields = [
+                f
+                for f in meta.local_concrete_fields
+                if (
+                    f.generated
+                    and f.referenced_fields.intersection(non_pks_non_generated)
+                )
+            ]
+            for field, _model, value in values:
+                if (update_fields is None or field.name in update_fields) and hasattr(
+                    value, "resolve_expression"
+                ):
+                    returning_fields.append(field)
+
+            # Also prepare fallback insert data in case update doesn't find a row
+            insert_fields = [
+                f
+                for f in meta.local_concrete_fields
+                if not f.generated and (pk_set or f is not meta.auto_field)
+            ]
+            insert_returning_fields = list(meta.db_returning_fields)
+            can_return_columns_from_insert = connections[
+                using
+            ].features.can_return_columns_from_insert
+
+            for field in insert_fields:
+                value = (
+                    getattr(self, field.attname) if raw else field.pre_save(self, False)
+                )
+                if hasattr(value, "resolve_expression"):
+                    if field not in insert_returning_fields:
+                        insert_returning_fields.append(field)
+                elif (
+                    field.db_returning
+                    and not can_return_columns_from_insert
+                    and not (pk_set and field is meta.auto_field)
+                ):
+                    insert_returning_fields.remove(field)
+
+            return SaveOperation(
+                cls=cls,
+                is_insert=False,
+                fields=non_pks_non_generated,
+                values=values,
+                returning_fields=returning_fields,
+                pk_val=pk_val,
+                forced_update=forced_update,
+                raw=raw,
+                insert_fields=insert_fields,
+                insert_returning_fields=insert_returning_fields,
+            )
+        else:
+            # Prepare INSERT operation
+            # Handle order_with_respect_to
+            if meta.order_with_respect_to:
+                field = meta.order_with_respect_to
+                filter_args = field.get_filter_kwargs_for_object(self)
+                self._order = (
+                    cls._base_manager.using(using)
+                    .filter(**filter_args)
+                    .aggregate(
+                        _order__max=Coalesce(
+                            ExpressionWrapper(
+                                Max("_order") + Value(1), output_field=IntegerField()
+                            ),
+                            Value(0),
+                        ),
+                    )["_order__max"]
+                )
+
+            insert_fields = [
+                f
+                for f in meta.local_concrete_fields
+                if not f.generated and (pk_set or f is not meta.auto_field)
+            ]
+            returning_fields = list(meta.db_returning_fields)
+            can_return_columns_from_insert = connections[
+                using
+            ].features.can_return_columns_from_insert
+
+            for field in insert_fields:
+                value = (
+                    getattr(self, field.attname) if raw else field.pre_save(self, False)
+                )
+                if hasattr(value, "resolve_expression"):
+                    if field not in returning_fields:
+                        returning_fields.append(field)
+                elif (
+                    field.db_returning
+                    and not can_return_columns_from_insert
+                    and not (pk_set and field is meta.auto_field)
+                ):
+                    returning_fields.remove(field)
+
+            return SaveOperation(
+                cls=cls,
+                is_insert=True,
+                fields=insert_fields,
+                returning_fields=returning_fields,
+                raw=raw,
+            )
+
+    def _execute_table_save(self, operation, using):
+        """
+        Execute a prepared SaveOperation and return whether an update occurred.
+
+        This method executes the actual database queries for a prepared save
+        operation. It should be called within a transaction context when
+        saving models with inheritance.
+        """
+        cls = operation.cls
+        updated = False
+
+        if not operation.is_insert:
+            # Execute UPDATE
+            base_qs = cls._base_manager.using(using)
+            results = self._do_update(
+                base_qs,
+                using,
+                operation.pk_val,
+                operation.values,
+                None,  # update_fields already incorporated into values
+                operation.forced_update,
+                operation.returning_fields,
+            )
+            if updated := bool(results):
+                self._assign_returned_values(results[0], operation.returning_fields)
+            elif operation.forced_update:
+                raise self.NotUpdated("Forced update did not affect any rows.")
+            # Note: The update_fields NotUpdated case is handled by caller
+            # since we need the original update_fields value
+
+        if not updated:
+            # Execute INSERT (either directly if is_insert, or as fallback from update)
+            if operation.is_insert:
+                insert_fields = operation.fields
+                insert_returning_fields = operation.returning_fields
+            else:
+                # Fallback to insert after update didn't find a row
+                insert_fields = operation.insert_fields
+                insert_returning_fields = operation.insert_returning_fields
+
+            results = self._do_insert(
+                cls._base_manager,
+                using,
+                insert_fields,
+                insert_returning_fields,
+                operation.raw,
+            )
+            if results:
+                self._assign_returned_values(results[0], insert_returning_fields)
+
+        return updated
+
+    def _prepare_save_operations(
+        self,
+        cls,
+        raw=False,
+        force_insert=False,
+        force_update=False,
+        using=None,
+        update_fields=None,
+    ):
+        """
+        Prepare all save operations for a model with inheritance.
+
+        Returns a list of (SaveOperation, parent_link_field) tuples in the order
+        they should be executed (parents first, then child).
+        """
+        operations = []
+        meta = cls._meta
+        force_insert = self._validate_force_insert(force_insert)
+
+        # Collect operations for all parent tables
+        def collect_parent_operations(parent_cls, updated_parents=None):
+            if updated_parents is None:
+                updated_parents = set()
+
+            parent_meta = parent_cls._meta
+            parent_ops = []
+
+            for parent, field in parent_meta.parents.items():
+                if parent in updated_parents:
+                    continue
+
+                # Make sure the link fields are synced between parent and self.
+                if (
+                    field
+                    and getattr(self, parent._meta.pk.attname) is None
+                    and getattr(self, field.attname) is not None
+                ):
+                    setattr(
+                        self, parent._meta.pk.attname, getattr(self, field.attname)
+                    )
+
+                # Recursively collect parent operations
+                grandparent_ops = collect_parent_operations(parent, updated_parents)
+                parent_ops.extend(grandparent_ops)
+
+                # Prepare operation for this parent
+                parent_inserted = any(
+                    op.is_insert for op, _ in grandparent_ops
+                )
+                op = self._prepare_table_save(
+                    raw=raw,
+                    cls=parent,
+                    force_insert=parent_inserted or issubclass(parent, force_insert),
+                    force_update=force_update,
+                    using=using,
+                    update_fields=update_fields,
+                )
+                parent_ops.append((op, field))
+                updated_parents.add(parent)
+
+            return parent_ops
+
+        if not raw:
+            parent_operations = collect_parent_operations(cls)
+            operations.extend(parent_operations)
+
+        # Check if any parent was inserted
+        parent_inserted = any(op.is_insert for op, _ in operations)
+
+        # Prepare operation for the main table
+        main_op = self._prepare_table_save(
+            raw=raw,
+            cls=cls,
+            force_insert=force_insert or parent_inserted,
+            force_update=force_update,
+            using=using,
+            update_fields=update_fields,
+        )
+        operations.append((main_op, None))
+
+        return operations
+
+    def _execute_save_operations(self, operations, using, update_fields=None):
+        """
+        Execute all prepared save operations within a transaction.
+
+        This method executes operations in order, handling parent link field
+        updates between parent and child saves.
+        """
+        parent_inserted = False
+
+        for operation, parent_link_field in operations:
+            # Execute the save operation
+            updated = self._execute_table_save(operation, using)
+
+            if not updated and not operation.is_insert:
+                # If update didn't affect rows and this isn't an insert,
+                # we need to handle the NotUpdated case
+                if update_fields:
+                    raise self.NotUpdated(
+                        "Save with update_fields did not affect any rows."
+                    )
+
+            if operation.is_insert and not updated:
+                parent_inserted = True
+
+            # Update parent link field if needed
+            if parent_link_field:
+                setattr(
+                    self,
+                    parent_link_field.attname,
+                    self._get_pk_val(operation.cls._meta),
+                )
+                # Invalidate the related object cache
+                if parent_link_field.is_cached(self):
+                    parent_link_field.delete_cached_value(self)
+
+        return parent_inserted
 
     def _prepare_related_fields_for_save(self, operation_name, fields=None):
         # Ensure that a model instance without a PK hasn't been assigned to
