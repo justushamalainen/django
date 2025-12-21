@@ -246,8 +246,9 @@ from django.utils.functional import cached_property
 
 
 class DatabaseFeatures(BaseDatabaseFeatures):
-    # Version requirement for target database
-    minimum_database_version = (1, 0)  # Adjust to target DB
+    # Version requirement - SQLite 3.35+ required for RETURNING clause
+    # Adjust to target database's minimum supported SQLite version
+    minimum_database_version = (3, 35)  # SQLite 3.35+ for RETURNING support
 
     # === TRANSACTION SUPPORT ===
     supports_transactions = True
@@ -266,15 +267,18 @@ class DatabaseFeatures(BaseDatabaseFeatures):
     supports_json_field_contains = False
 
     # === SCHEMA OPERATIONS ===
-    # SQLite limitations typically apply
     can_alter_table_rename_column = True
-    can_alter_table_drop_column = False  # If SQLite-like
+    can_alter_table_drop_column = True  # SQLite 3.35+ supports DROP COLUMN
     supports_foreign_keys = True
     can_create_inline_fk = True
 
     # === QUERY CAPABILITIES ===
     supports_select_for_update = False  # SQLite limitation
     supports_select_for_update_with_limit = False
+
+    # === RETURNING CLAUSE (SQLite 3.35+) ===
+    can_return_columns_from_insert = True
+    can_return_rows_from_bulk_insert = True
 
     # === BULK OPERATIONS ===
     supports_update_conflicts = True
@@ -298,7 +302,8 @@ class DatabaseFeatures(BaseDatabaseFeatures):
 | `can_rollback_ddl` | `True` | `True` | Target DB behavior |
 | `has_select_for_update` | `False` | `True` | Target DB support |
 | `supports_timezones` | `False` | `True` | Target DB types |
-| `can_return_columns_from_insert` | `False` | `True` | Target DB support |
+| `can_return_columns_from_insert` | `True` (3.35+) | `True` | SQLite supports RETURNING |
+| `can_return_rows_from_bulk_insert` | `True` (3.35+) | `True` | SQLite supports RETURNING |
 | `has_native_json_field` | `False` | `True` (jsonb) | Target DB types |
 
 ---
@@ -379,11 +384,17 @@ If your target database doesn't have SQLite's built-in functions, you may need t
 
 ### 4.5 `schema.py` - DatabaseSchemaEditor
 
-Handles DDL operations. **Base on SQLite** due to schema modification limitations.
+Handles DDL operations. **Base on SQLite** for schema modification patterns.
 
 #### Key Considerations
 
-SQLite's schema limitations often require **table recreation**:
+SQLite 3.35+ supports many ALTER TABLE operations natively:
+- `ADD COLUMN` - Supported
+- `DROP COLUMN` - Supported (3.35+)
+- `RENAME COLUMN` - Supported (3.25+)
+- `RENAME TABLE` - Supported
+
+For operations not natively supported, **table recreation** is required:
 1. Create new table with desired schema
 2. Copy data from old table
 3. Drop old table
@@ -401,7 +412,8 @@ class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
         "REFERENCES %(to_table)s (%(to_column)s) "
         "DEFERRABLE INITIALLY DEFERRED"
     )
-    sql_delete_column = None  # Requires table rebuild
+    # SQLite 3.35+ supports DROP COLUMN natively
+    sql_delete_column = "ALTER TABLE %(table)s DROP COLUMN %(column)s"
 
     # === TABLE RECREATION ===
     def alter_field(self, model, old_field, new_field, strict=False):
@@ -776,11 +788,11 @@ class DatabaseFeatures(BaseDatabaseFeatures):
     # INSERT/UPDATE FEATURES
     # ============================================================
 
-    # INSERT ... RETURNING support
-    can_return_columns_from_insert = False  # Check target DB
+    # INSERT ... RETURNING support (SQLite 3.35+ supports RETURNING)
+    can_return_columns_from_insert = True
 
-    # Bulk insert can return IDs
-    can_return_rows_from_bulk_insert = False  # Check target DB
+    # Bulk insert can return IDs (SQLite 3.35+ supports RETURNING)
+    can_return_rows_from_bulk_insert = True
 
     # ============================================================
     # SCHEMA FEATURES
@@ -789,8 +801,8 @@ class DatabaseFeatures(BaseDatabaseFeatures):
     # ALTER TABLE ADD COLUMN
     can_alter_table_rename_column = True
 
-    # ALTER TABLE DROP COLUMN (SQLite added in 3.35+)
-    can_alter_table_drop_column = False  # Conservative default
+    # ALTER TABLE DROP COLUMN (SQLite 3.35+ supports this)
+    can_alter_table_drop_column = True  # Supported in SQLite 3.35+
 
     # ============================================================
     # TYPE FEATURES
@@ -906,13 +918,7 @@ DATABASES = {
 
 ## 10. Known Challenges
 
-### Challenge 1: SQL Dialect Mismatches
-
-**Problem**: Some SQL statements that work in SQLite may not work over PostgreSQL wire protocol, or vice versa.
-
-**Solution**: Test extensively and override specific SQL generation methods in `operations.py`.
-
-### Challenge 2: Type System Differences
+### Challenge 1: Type System Differences
 
 **Problem**: PostgreSQL has rich types (inet, uuid, jsonb), SQLite uses dynamic typing.
 
@@ -920,7 +926,7 @@ DATABASES = {
 - Use `data_types` mapping to specify SQLite-compatible types
 - Implement converters in `get_db_converters()`
 
-### Challenge 3: Schema Introspection
+### Challenge 2: Schema Introspection
 
 **Problem**: Target database may not expose schema information in standard ways.
 
@@ -928,7 +934,7 @@ DATABASES = {
 - Investigate target DB's system tables/views
 - May need custom introspection queries
 
-### Challenge 4: Auto-increment/Sequences
+### Challenge 3: Auto-increment/Sequences
 
 **Problem**: SQLite uses `INTEGER PRIMARY KEY` for auto-increment, PostgreSQL uses `SERIAL`/`IDENTITY`.
 
@@ -936,21 +942,13 @@ DATABASES = {
 - Use SQLite-style (`INTEGER PRIMARY KEY`)
 - Ensure `data_types_suffix` doesn't add PostgreSQL-isms
 
-### Challenge 5: Transaction Isolation
+### Challenge 4: Transaction Isolation
 
 **Problem**: SQLite and PostgreSQL handle isolation differently.
 
 **Solution**:
 - Document supported isolation levels
 - Implement `_set_autocommit()` appropriately
-
-### Challenge 6: RETURNING Clause
-
-**Problem**: PostgreSQL supports `INSERT ... RETURNING`, SQLite added limited support in 3.35+.
-
-**Solution**:
-- Set `can_return_columns_from_insert` based on target DB
-- Fall back to `SELECT last_insert_rowid()` pattern if needed
 
 ---
 
