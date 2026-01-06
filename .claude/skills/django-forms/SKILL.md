@@ -2,24 +2,14 @@
 
 ## Overview
 
-This skill helps you create, validate, and render Django forms with proper security, accessibility, and frontend integration. Django forms handle user input validation, data cleaning, CSRF protection, and HTML rendering.
+This skill helps you create and validate Django forms. Forms handle user input, validation, data cleaning, and HTML rendering.
 
-**When to use this skill:**
-- Creating forms for data entry and validation
-- Building ModelForms from Django models
-- Implementing complex validation logic (cross-field, conditional)
-- Handling file uploads securely
-- Integrating forms with CSS frameworks (Bootstrap, Tailwind)
-- Adding AJAX form submission
-- Creating formsets for multiple object editing
-- Ensuring form accessibility (WCAG compliance)
+**Use this skill for:** Creating forms for data entry, building ModelForms, validation logic, file uploads, and formsets.
 
 ## Quick Start
 
-**Create a ModelForm in 3 steps:**
-
 ```python
-# 1. Define the form (forms.py)
+# forms.py
 from django import forms
 from .models import Article
 
@@ -27,11 +17,9 @@ class ArticleForm(forms.ModelForm):
     class Meta:
         model = Article
         fields = ['title', 'content', 'published']
-        widgets = {
-            'content': forms.Textarea(attrs={'rows': 5}),
-        }
+        widgets = {'content': forms.Textarea(attrs={'rows': 5})}
 
-# 2. Use in view (views.py)
+# views.py
 def create_article(request):
     if request.method == 'POST':
         form = ArticleForm(request.POST)
@@ -42,7 +30,7 @@ def create_article(request):
         form = ArticleForm()
     return render(request, 'article_form.html', {'form': form})
 
-# 3. Render in template (article_form.html)
+# template
 <form method="post">
   {% csrf_token %}
   {{ form.as_p }}
@@ -50,182 +38,136 @@ def create_article(request):
 </form>
 ```
 
-## When to Use This Skill
+## Form vs ModelForm
 
-### Form vs ModelForm Decision Tree
+**Use ModelForm:** When saving to database, want automatic field generation, CRUD operations.
 
-```
-Does your form save data to a model?
-├─ YES → Use ModelForm
-│  └─ Need custom validation?
-│     ├─ Field-level → Override clean_<fieldname>()
-│     └─ Cross-field → Override clean()
-│
-└─ NO → Use Form
-   ├─ Login, search, contact forms
-   ├─ API parameter validation
-   └─ Multi-step wizards
-```
-
-### Common Use Cases
-
-| Scenario | Solution |
-|----------|----------|
-| Single model CRUD | ModelForm with Meta.fields |
-| File upload | FileField/ImageField with validation |
-| Multiple related objects | Formsets (inline or standalone) |
-| Frontend framework integration | Form with JSON response + AJAX |
-| Complex validation | Custom clean() methods |
-| Dynamic fields | Override __init__() to modify fields |
-
-## Core Workflows
-
-### Workflow 1: Create ModelForm with Validation
+**Use Form:** When not saving to database (search, login, contact), fields not in any model, API validation, multi-step wizards.
 
 ```python
-from django import forms
-from .models import Product
-
+# ModelForm - database operations
 class ProductForm(forms.ModelForm):
-    agree_to_terms = forms.BooleanField(required=True)
-
     class Meta:
         model = Product
-        fields = ['name', 'price', 'description', 'category']
-        widgets = {
-            'description': forms.Textarea(attrs={'rows': 4, 'class': 'form-control'}),
-            'price': forms.NumberInput(attrs={'min': '0', 'step': '0.01'})
-        }
+        fields = ['name', 'price', 'description']
+
+# Form - non-database operations
+class SearchForm(forms.Form):
+    query = forms.CharField(max_length=100)
+    category = forms.ChoiceField(choices=CATEGORIES)
+```
+
+## Validation Patterns
+
+### Single Field: clean_<fieldname>()
+
+```python
+class ProductForm(forms.ModelForm):
+    class Meta:
+        model = Product
+        fields = ['name', 'price']
+
+    def clean_name(self):
+        name = self.cleaned_data.get('name')
+
+        # Check uniqueness (excluding current instance)
+        qs = Product.objects.filter(name__iexact=name)
+        if self.instance.pk:
+            qs = qs.exclude(pk=self.instance.pk)
+
+        if qs.exists():
+            raise forms.ValidationError('Product name already exists.')
+
+        return name
 
     def clean_price(self):
-        """Field-level validation."""
         price = self.cleaned_data.get('price')
         if price and price < 0:
             raise forms.ValidationError('Price cannot be negative.')
         return price
-
-    def clean_name(self):
-        """Check uniqueness."""
-        name = self.cleaned_data.get('name')
-        qs = Product.objects.filter(name__iexact=name)
-        if self.instance.pk:
-            qs = qs.exclude(pk=self.instance.pk)
-        if qs.exists():
-            raise forms.ValidationError('Product name already exists.')
-        return name
 ```
 
-**View usage:**
-```python
-def product_create(request):
-    if request.method == 'POST':
-        form = ProductForm(request.POST)
-        if form.is_valid():
-            product = form.save(commit=False)
-            product.created_by = request.user
-            product.save()
-            return redirect('product_detail', pk=product.pk)
-    else:
-        form = ProductForm()
-    return render(request, 'products/form.html', {'form': form})
-```
-
-### Workflow 2: Add Cross-Field Validation
+### Cross-Field: clean()
 
 ```python
-from django import forms
-from datetime import date
-
-class EventForm(forms.ModelForm):
-    class Meta:
-        model = Event
-        fields = ['name', 'start_date', 'end_date', 'is_online', 'venue', 'meeting_link']
+class EventForm(forms.Form):
+    start_date = forms.DateField()
+    end_date = forms.DateField()
+    is_online = forms.BooleanField(required=False)
+    venue = forms.CharField(required=False)
+    meeting_link = forms.URLField(required=False)
 
     def clean(self):
-        """Cross-field validation."""
         cleaned_data = super().clean()
         start_date = cleaned_data.get('start_date')
         end_date = cleaned_data.get('end_date')
-        is_online = cleaned_data.get('is_online')
 
-        # Validate date range
+        # Date range validation
         if start_date and end_date and end_date < start_date:
             raise forms.ValidationError('End date must be after start date.')
 
-        # Conditional field requirements
-        if is_online and not cleaned_data.get('meeting_link'):
-            self.add_error('meeting_link', 'Required for online events.')
-        elif not is_online and not cleaned_data.get('venue'):
-            self.add_error('venue', 'Required for in-person events.')
+        # Conditional requirements
+        if cleaned_data.get('is_online'):
+            if not cleaned_data.get('meeting_link'):
+                self.add_error('meeting_link', 'Required for online events.')
+        else:
+            if not cleaned_data.get('venue'):
+                self.add_error('venue', 'Required for in-person events.')
 
         return cleaned_data
 ```
 
-**Key patterns:**
-- Use `raise forms.ValidationError()` for general form errors
-- Use `self.add_error('field', 'message')` for field-specific errors
-- Always return `cleaned_data` at the end
+## Widget Customization
 
-### Workflow 3: Handle File Uploads Securely
+### Add CSS Classes
 
 ```python
-from django import forms
-from django.core.validators import FileExtensionValidator
-import magic
-
-def validate_file_size(file):
-    """Limit file size to 5MB."""
-    if file.size > 5 * 1024 * 1024:
-        raise forms.ValidationError('File size cannot exceed 5MB.')
-
-def validate_image_mime_type(file):
-    """Verify actual MIME type."""
-    valid_mime_types = ['image/jpeg', 'image/png', 'image/gif']
-    file_mime = magic.from_buffer(file.read(1024), mime=True)
-    file.seek(0)
-    if file_mime not in valid_mime_types:
-        raise forms.ValidationError(f'Invalid file type: {file_mime}')
-
-class ProfileForm(forms.ModelForm):
-    avatar = forms.ImageField(
-        required=False,
-        validators=[
-            validate_file_size,
-            validate_image_mime_type,
-            FileExtensionValidator(['jpg', 'jpeg', 'png', 'gif'])
-        ]
-    )
-
+class ProductForm(forms.ModelForm):
     class Meta:
-        model = Profile
-        fields = ['avatar', 'bio']
+        model = Product
+        fields = ['name', 'price', 'description']
+        widgets = {
+            'name': forms.TextInput(attrs={'class': 'form-control'}),
+            'price': forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01'}),
+            'description': forms.Textarea(attrs={'class': 'form-control', 'rows': 5}),
+        }
 ```
 
-**Template:**
-```html
-<form method="post" enctype="multipart/form-data">  <!-- Required! -->
-  {% csrf_token %}
-  {{ form.as_p }}
-  <button type="submit">Update</button>
-</form>
+### Apply to All Fields
+
+```python
+class BootstrapForm(forms.Form):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for field_name, field in self.fields.items():
+            if isinstance(field.widget, (forms.TextInput, forms.Textarea,
+                                        forms.EmailInput, forms.NumberInput)):
+                field.widget.attrs['class'] = 'form-control'
+            elif isinstance(field.widget, forms.Select):
+                field.widget.attrs['class'] = 'form-select'
 ```
 
-**See:** `/home/user/django/.claude/skills/django-forms/reference/file_uploads.md`
+### HTML5 Input Types
 
-### Workflow 4: Create Formsets
+```python
+class ContactForm(forms.Form):
+    email = forms.EmailField(widget=forms.EmailInput(attrs={'type': 'email'}))
+    birth_date = forms.DateField(widget=forms.DateInput(attrs={'type': 'date'}))
+    age = forms.IntegerField(widget=forms.NumberInput(attrs={'min': '0', 'max': '150'}))
+```
+
+## Formsets
+
+Handle multiple forms on one page:
 
 ```python
 from django.forms import inlineformset_factory
 from .models import Order, OrderItem
 
 OrderItemFormSet = inlineformset_factory(
-    Order,
-    OrderItem,
+    Order, OrderItem,
     fields=['product', 'quantity', 'price'],
-    extra=3,
-    can_delete=True,
-    min_num=1,
-    validate_min=True,
+    extra=3, can_delete=True, min_num=1, validate_min=True
 )
 
 def order_update(request, pk):
@@ -239,7 +181,7 @@ def order_update(request, pk):
     else:
         formset = OrderItemFormSet(instance=order)
 
-    return render(request, 'order_form.html', {'order': order, 'formset': formset})
+    return render(request, 'order_form.html', {'formset': formset})
 ```
 
 **Template:**
@@ -247,249 +189,89 @@ def order_update(request, pk):
 <form method="post">
   {% csrf_token %}
   {{ formset.management_form }}  <!-- Required! -->
-
   {% for form in formset %}
     {{ form.as_p }}
   {% endfor %}
-
   <button type="submit">Save</button>
 </form>
 ```
 
-### Workflow 5: AJAX Form Submission
+## File Upload
 
-**Django View:**
 ```python
-from django.http import JsonResponse
+from django.core.validators import FileExtensionValidator
 
-def contact_submit(request):
-    form = ContactForm(request.POST)
+def validate_file_size(file):
+    if file.size > 5 * 1024 * 1024:  # 5MB
+        raise forms.ValidationError('File size cannot exceed 5MB.')
 
-    if form.is_valid():
-        contact = form.save()
-        return JsonResponse({
-            'success': True,
-            'message': 'Form submitted successfully!'
-        })
+class ProfileForm(forms.ModelForm):
+    avatar = forms.ImageField(
+        required=False,
+        validators=[validate_file_size, FileExtensionValidator(['jpg', 'jpeg', 'png', 'gif'])]
+    )
+    class Meta:
+        model = Profile
+        fields = ['avatar', 'bio']
+```
+
+**View:**
+```python
+def profile_update(request):
+    if request.method == 'POST':
+        form = ProfileForm(request.POST, request.FILES, instance=request.user.profile)
+        if form.is_valid():
+            form.save()
+            return redirect('profile')
     else:
-        return JsonResponse({
-            'success': False,
-            'errors': form.errors,
-        }, status=400)
+        form = ProfileForm(instance=request.user.profile)
+    return render(request, 'profile_form.html', {'form': form})
 ```
 
-**JavaScript (Fetch API):**
-```javascript
-function getCookie(name) {
-    let cookieValue = null;
-    if (document.cookie && document.cookie !== '') {
-        const cookies = document.cookie.split(';');
-        for (let i = 0; i < cookies.length; i++) {
-            const cookie = cookies[i].trim();
-            if (cookie.substring(0, name.length + 1) === (name + '=')) {
-                cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
-                break;
-            }
-        }
-    }
-    return cookieValue;
-}
-
-document.getElementById('contact-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-
-    const formData = new FormData(e.target);
-    const csrftoken = getCookie('csrftoken');
-
-    try {
-        const response = await fetch('/api/contact/', {
-            method: 'POST',
-            headers: {'X-CSRFToken': csrftoken},
-            body: formData
-        });
-
-        const data = await response.json();
-
-        if (data.success) {
-            alert(data.message);
-            e.target.reset();
-        } else {
-            displayErrors(data.errors);
-        }
-    } catch (error) {
-        console.error('Error:', error);
-    }
-});
-
-function displayErrors(errors) {
-    for (const [field, messages] of Object.entries(errors)) {
-        const input = document.querySelector(`[name="${field}"]`);
-        if (input) {
-            const errorDiv = document.createElement('div');
-            errorDiv.className = 'error-message';
-            errorDiv.textContent = messages.join(', ');
-            input.parentNode.appendChild(errorDiv);
-        }
-    }
-}
-```
-
-**See:** `/home/user/django/.claude/skills/django-forms/reference/ajax_patterns.md`
-
-## Scripts & Tools
-
-### Generate Form Script
-
-Generate a ModelForm from a Django model:
-
-```bash
-python /home/user/django/.claude/skills/django-forms/scripts/generate_form.py \
-    --model myapp.Product \
-    --output myapp/forms.py
-```
-
-**Options:**
-- `--fields name,price,description` - Include only specific fields
-- `--exclude created_at,updated_at` - Exclude specific fields
-
-### Accessibility Checker
-
-Check form templates for accessibility issues:
-
-```bash
-python /home/user/django/.claude/skills/django-forms/scripts/accessibility_check.py \
-    templates/forms/
-```
-
-**Checks for:**
-- Missing labels
-- Missing ARIA attributes
-- Missing required indicators
-- Improper button types
-- Missing fieldset/legend
-
-## Anti-Patterns
-
-### 1. Validating in Views Instead of Forms
-
-**Bad:**
-```python
-def create_product(request):
-    name = request.POST.get('name')
-    if not name:
-        return render(request, 'form.html', {'error': 'Name required'})
-```
-
-**Good:**
-```python
-form = ProductForm(request.POST)
-if form.is_valid():
-    form.save()
-```
-
-### 2. Not Using commit=False
-
-**Bad:**
-```python
-product = form.save()  # Already saved
-product.created_by = request.user
-product.save()  # Saves twice
-```
-
-**Good:**
-```python
-product = form.save(commit=False)
-product.created_by = request.user
-product.save()
-```
-
-### 3. Ignoring CSRF Protection
-
-**Never do this:**
-```python
-from django.views.decorators.csrf import csrf_exempt
-
-@csrf_exempt  # DANGEROUS!
-def my_form_view(request):
-    pass
-```
-
-### 4. Manual HTML Without Form Rendering
-
-**Avoid:**
+**Template:**
 ```html
-<input type="text" name="title">  <!-- No error handling, attributes -->
-```
-
-**Prefer:**
-```html
-{{ form.title }}  <!-- Includes errors, attributes, accessibility -->
-```
-
-## Security Considerations
-
-### CSRF Protection
-
-Always include `{% csrf_token %}` in POST forms:
-
-```html
-<form method="post">
+<form method="post" enctype="multipart/form-data">  <!-- Required! -->
   {% csrf_token %}
   {{ form.as_p }}
-  <button type="submit">Submit</button>
+  <button type="submit">Update</button>
 </form>
 ```
 
-**For AJAX:**
-```javascript
-headers: {'X-CSRFToken': csrftoken}
-```
+## Common Patterns
 
-### XSS Prevention
+### Save with commit=False
 
-Django auto-escapes template variables:
-```django
-{{ form.title.value }}  <!-- Automatically escaped -->
-```
-
-### File Upload Security
-
-**Key practices:**
-1. Validate file extensions AND MIME types
-2. Limit file sizes
-3. Sanitize filenames
-4. Store outside web root
-5. Scan for malware in production
-
-**See:** `/home/user/django/.claude/skills/django-forms/reference/file_uploads.md`
-
-### SQL Injection Prevention
-
-Forms + ORM = automatic protection:
 ```python
-Product.objects.filter(name=form.cleaned_data['name'])  # Safe
+if form.is_valid():
+    product = form.save(commit=False)
+    product.created_by = request.user
+    product.save()
+```
+
+### Dynamic Choices
+
+```python
+class ProductForm(forms.Form):
+    category = forms.ChoiceField()
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['category'].choices = [(c.id, c.name) for c in Category.objects.all()]
 ```
 
 ## Reference Files
 
-- **Field Types:** `/home/user/django/.claude/skills/django-forms/reference/field_types.md` - All form field types, widgets, validation options
-- **Validation:** `/home/user/django/.claude/skills/django-forms/reference/validation.md` - Field-level, form-level, cross-field validation patterns
-- **Widgets:** `/home/user/django/.claude/skills/django-forms/reference/widgets.md` - Widget customization, CSS/JS handling
-- **CSS Frameworks:** `/home/user/django/.claude/skills/django-forms/reference/css_frameworks.md` - Bootstrap, Tailwind integration, accessibility
-- **AJAX Patterns:** `/home/user/django/.claude/skills/django-forms/reference/ajax_patterns.md` - Fetch API, htmx, real-time validation
-- **File Uploads:** `/home/user/django/.claude/skills/django-forms/reference/file_uploads.md` - File validation, security, image processing
+- **Field Types:** `/home/user/django/.claude/skills/django-forms/reference/field_types.md`
+- **Validation:** `/home/user/django/.claude/skills/django-forms/reference/validation.md`
+- **Widgets:** `/home/user/django/.claude/skills/django-forms/reference/widgets.md`
 
-## Related Skills
+## Best Practices
 
-- **django-models** - Define models for ModelForms
-- **django-views** - Handle form submission in views
-- **django-templates** - Render forms in templates
-- **django-admin** - Admin uses Django forms internally
-- **django-testing** - Test form validation
-
-## Django Version Notes
-
-- **Django 4.1+**: Async form validation not yet supported
-- **Django 4.0+**: Template-based widget rendering, formset validation improvements
-- **Django 3.2+**: LTS version, stable form API
-- **Django 5.0+**: Improved error messages, better accessibility defaults
+1. Always validate server-side (never trust client-side only)
+2. Use ModelForm when saving to database
+3. Use commit=False when adding extra data before save
+4. Always include {% csrf_token %} in POST forms
+5. Use clean_<fieldname>() for single field validation
+6. Use clean() for cross-field validation
+7. Always return cleaned_data from clean methods
+8. Provide helpful, actionable error messages

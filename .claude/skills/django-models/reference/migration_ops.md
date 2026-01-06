@@ -1,402 +1,214 @@
-# Django Migration Operations Reference
+# Django Migrations - Safe Patterns
 
-Comprehensive guide to Django migrations, including data migrations, schema changes, and rollback strategies.
-
-## Table of Contents
-
-- [Migration Basics](#migration-basics)
-- [Schema Migrations](#schema-migrations)
-- [Data Migrations](#data-migrations)
-- [Complex Migration Patterns](#complex-migration-patterns)
-- [Rollback Strategies](#rollback-strategies)
-- [Migration Conflicts](#migration-conflicts)
-- [Best Practices](#best-practices)
+Practical guide to safe Django migrations for production environments.
 
 ## Migration Basics
 
-### Creating Migrations
+### Creating and Applying
 
 ```bash
-# Auto-detect model changes
-python manage.py makemigrations
-
-# Specify app
+# Create migration
 python manage.py makemigrations myapp
 
-# Empty migration for data migration
-python manage.py makemigrations --empty myapp
-
-# Dry run (show what would be created)
-python manage.py makemigrations --dry-run
-
-# Name the migration
-python manage.py makemigrations myapp --name add_status_field
-```
-
-### Applying Migrations
-
-```bash
-# Apply all migrations
+# Apply migrations
 python manage.py migrate
 
-# Apply specific app
-python manage.py migrate myapp
-
-# Apply to specific migration
-python manage.py migrate myapp 0004
-
-# Show migration status
+# Show status
 python manage.py showmigrations
 
-# Show SQL for migration
+# Show SQL (review before applying)
 python manage.py sqlmigrate myapp 0001
 
 # Check for issues
 python manage.py makemigrations --check
 ```
 
-### Migration Structure
+## Safe Schema Changes
+
+### Adding Fields (Safe)
 
 ```python
-from django.db import migrations, models
+# Nullable field - Safe, no default needed
+migrations.AddField(
+    model_name='article',
+    name='subtitle',
+    field=models.CharField(max_length=200, null=True, blank=True),
+)
 
+# Field with default - Safe
+migrations.AddField(
+    model_name='article',
+    name='status',
+    field=models.CharField(max_length=20, default='draft'),
+)
+```
+
+### Adding Non-Nullable Fields (Two-Step)
+
+When adding a non-nullable field to a table with existing data:
+
+```python
+# Step 1: Add as nullable
 class Migration(migrations.Migration):
-    # Dependencies: Migrations that must run before this one
-    dependencies = [
-        ('myapp', '0001_initial'),
-    ]
-
-    # Operations to perform
     operations = [
         migrations.AddField(
             model_name='article',
-            name='status',
-            field=models.CharField(max_length=20, default='draft'),
+            name='category',
+            field=models.ForeignKey(
+                'Category',
+                on_delete=models.SET_NULL,
+                null=True
+            ),
+        ),
+    ]
+
+# Step 2: Populate data (separate migration)
+def populate_category(apps, schema_editor):
+    Article = apps.get_model('myapp', 'Article')
+    Category = apps.get_model('myapp', 'Category')
+
+    default_category = Category.objects.get_or_create(
+        name='Uncategorized',
+        defaults={'slug': 'uncategorized'}
+    )[0]
+
+    Article.objects.filter(category__isnull=True).update(category=default_category)
+
+class Migration(migrations.Migration):
+    dependencies = [('myapp', '0002_add_category_field')]
+
+    operations = [
+        migrations.RunPython(populate_category, migrations.RunPython.noop),
+    ]
+
+# Step 3: Make non-nullable (if needed)
+class Migration(migrations.Migration):
+    operations = [
+        migrations.AlterField(
+            model_name='article',
+            name='category',
+            field=models.ForeignKey('Category', on_delete=models.CASCADE),
         ),
     ]
 ```
 
-## Schema Migrations
-
-### Adding Fields
-
-```python
-# Add nullable field (safe, no default needed)
-operations = [
-    migrations.AddField(
-        model_name='article',
-        name='subtitle',
-        field=models.CharField(max_length=200, null=True, blank=True),
-    ),
-]
-
-# Add field with default (safe)
-operations = [
-    migrations.AddField(
-        model_name='article',
-        name='status',
-        field=models.CharField(max_length=20, default='draft'),
-    ),
-]
-
-# Add non-nullable field to table with data (two-step process)
-# Step 1: Add as nullable
-operations = [
-    migrations.AddField(
-        model_name='article',
-        name='category',
-        field=models.ForeignKey(
-            'Category',
-            on_delete=models.SET_NULL,
-            null=True
-        ),
-    ),
-]
-
-# Step 2: After populating data, make non-nullable (see Data Migrations)
-```
-
-### Removing Fields
+### Removing Fields (Safe)
 
 ```python
 # Simple removal
-operations = [
-    migrations.RemoveField(
-        model_name='article',
-        name='old_field',
-    ),
-]
+migrations.RemoveField(
+    model_name='article',
+    name='old_field',
+)
 
-# Safe removal process:
-# 1. Remove from models.py
+# Safe deployment process:
+# 1. Remove field usage from code
 # 2. Deploy code (field still in database)
-# 3. Create migration to remove field
-# 4. Deploy migration
+# 3. Create and deploy migration
 ```
 
-### Altering Fields
+### Renaming Fields (Safe)
 
 ```python
-# Change field type
-operations = [
-    migrations.AlterField(
-        model_name='article',
-        name='status',
-        field=models.CharField(max_length=50),  # Was max_length=20
-    ),
-]
-
-# Add database index
-operations = [
-    migrations.AlterField(
-        model_name='article',
-        name='slug',
-        field=models.SlugField(max_length=200, db_index=True),
-    ),
-]
-
-# Change to non-nullable (requires data)
-operations = [
-    migrations.AlterField(
-        model_name='article',
-        name='category',
-        field=models.ForeignKey(
-            'Category',
-            on_delete=models.CASCADE,
-            # Removed null=True
-        ),
-    ),
-]
+# Django handles the database rename automatically
+migrations.RenameField(
+    model_name='article',
+    old_name='publish_date',
+    new_name='published_at',
+)
 ```
 
-### Renaming Fields
-
-```python
-# Rename field (database operation)
-operations = [
-    migrations.RenameField(
-        model_name='article',
-        old_name='publish_date',
-        new_name='published_at',
-    ),
-]
-
-# Note: This is safe - Django handles the rename
-```
-
-### Creating Models
-
-```python
-operations = [
-    migrations.CreateModel(
-        name='Category',
-        fields=[
-            ('id', models.AutoField(primary_key=True)),
-            ('name', models.CharField(max_length=100)),
-            ('slug', models.SlugField(unique=True)),
-            ('created_at', models.DateTimeField(auto_now_add=True)),
-        ],
-        options={
-            'verbose_name_plural': 'categories',
-            'ordering': ['name'],
-        },
-    ),
-]
-```
-
-### Deleting Models
-
-```python
-operations = [
-    migrations.DeleteModel(name='OldModel'),
-]
-
-# Safe deletion process:
-# 1. Remove references in other models first
-# 2. Deploy code changes
-# 3. Create migration to delete model
-# 4. Deploy migration
-```
-
-### Renaming Models
-
-```python
-operations = [
-    migrations.RenameModel(
-        old_name='Article',
-        new_name='Post',
-    ),
-]
-
-# Updates:
-# - Table name
-# - Foreign key references
-# - Many-to-many tables
-```
-
-### Indexes and Constraints
+### Adding Indexes (Safe)
 
 ```python
 # Add index
-operations = [
-    migrations.AddIndex(
-        model_name='article',
-        index=models.Index(fields=['status', '-created_at'], name='status_created_idx'),
+migrations.AddIndex(
+    model_name='article',
+    index=models.Index(
+        fields=['status', '-created_at'],
+        name='status_created_idx'
     ),
-]
+)
 
-# Remove index
-operations = [
-    migrations.RemoveIndex(
-        model_name='article',
-        name='status_created_idx',
-    ),
-]
+# For large tables, use CONCURRENT (PostgreSQL only)
+from django.contrib.postgres.operations import AddIndexConcurrently
 
-# Add unique constraint
-operations = [
-    migrations.AddConstraint(
-        model_name='article',
-        constraint=models.UniqueConstraint(
-            fields=['author', 'slug'],
-            name='unique_author_slug'
+class Migration(migrations.Migration):
+    atomic = False  # Required for CONCURRENT
+
+    operations = [
+        AddIndexConcurrently(
+            model_name='article',
+            index=models.Index(fields=['status'], name='status_idx'),
         ),
-    ),
-]
-
-# Add check constraint
-operations = [
-    migrations.AddConstraint(
-        model_name='article',
-        constraint=models.CheckConstraint(
-            check=models.Q(views__gte=0),
-            name='views_non_negative'
-        ),
-    ),
-]
+    ]
 ```
 
 ## Data Migrations
 
-### Basic Data Migration
+### Basic Pattern
 
 ```python
-from django.db import migrations
-
-def populate_status(apps, schema_editor):
-    """Forward migration: Set default status"""
+def forward_migration(apps, schema_editor):
+    """Migrate data forward"""
     Article = apps.get_model('myapp', 'Article')
 
-    # Update in batches for large tables
+    # Update data
     Article.objects.filter(status__isnull=True).update(status='draft')
 
-def reverse_populate_status(apps, schema_editor):
-    """Reverse migration: Clear status"""
+def reverse_migration(apps, schema_editor):
+    """Reverse the migration"""
     Article = apps.get_model('myapp', 'Article')
-    Article.objects.all().update(status=None)
+
+    # Revert data
+    Article.objects.filter(status='draft').update(status=None)
 
 class Migration(migrations.Migration):
-    dependencies = [
-        ('myapp', '0002_article_status'),
-    ]
+    dependencies = [('myapp', '0001_initial')]
 
     operations = [
-        migrations.RunPython(populate_status, reverse_populate_status),
+        migrations.RunPython(forward_migration, reverse_migration),
     ]
 ```
 
-### Complex Data Migration
+### Batch Processing for Large Tables
 
 ```python
-def migrate_article_data(apps, schema_editor):
-    """Migrate data from old structure to new"""
+def migrate_large_table(apps, schema_editor):
+    """Process large table in batches"""
     Article = apps.get_model('myapp', 'Article')
-    Category = apps.get_model('myapp', 'Category')
 
-    # Get or create default category
-    default_category, _ = Category.objects.get_or_create(
-        name='Uncategorized',
-        defaults={'slug': 'uncategorized'}
-    )
+    batch_size = 5000
+    articles = Article.objects.filter(status__isnull=True)
+    total = articles.count()
 
-    # Process in batches to avoid memory issues
-    batch_size = 1000
-    articles = Article.objects.filter(category__isnull=True)
+    for offset in range(0, total, batch_size):
+        batch = articles[offset:offset + batch_size]
+        batch_ids = list(batch.values_list('id', flat=True))
 
-    for i in range(0, articles.count(), batch_size):
-        batch = articles[i:i + batch_size]
-        for article in batch:
-            article.category = default_category
-            article.save(update_fields=['category'])
+        Article.objects.filter(id__in=batch_ids).update(status='draft')
 
-def reverse_migrate(apps, schema_editor):
-    """Reverse: Set category to NULL"""
-    Article = apps.get_model('myapp', 'Article')
-    Category = apps.get_model('myapp', 'Category')
-
-    default_category = Category.objects.filter(name='Uncategorized').first()
-    if default_category:
-        Article.objects.filter(category=default_category).update(category=None)
+        print(f"Processed {min(offset + batch_size, total)}/{total}")
 
 class Migration(migrations.Migration):
-    dependencies = [
-        ('myapp', '0003_add_category_field'),
-    ]
-
     operations = [
-        migrations.RunPython(migrate_article_data, reverse_migrate),
-    ]
-```
-
-### Data Migration with bulk_update
-
-```python
-def migrate_slugs(apps, schema_editor):
-    """Generate slugs for existing articles"""
-    from django.utils.text import slugify
-
-    Article = apps.get_model('myapp', 'Article')
-
-    articles_to_update = []
-    for article in Article.objects.filter(slug=''):
-        article.slug = slugify(article.title)
-        articles_to_update.append(article)
-
-        # Update in batches
-        if len(articles_to_update) >= 500:
-            Article.objects.bulk_update(articles_to_update, ['slug'])
-            articles_to_update = []
-
-    # Update remaining
-    if articles_to_update:
-        Article.objects.bulk_update(articles_to_update, ['slug'])
-
-class Migration(migrations.Migration):
-    dependencies = [
-        ('myapp', '0004_article_slug'),
-    ]
-
-    operations = [
-        migrations.RunPython(migrate_slugs, migrations.RunPython.noop),
+        migrations.RunPython(migrate_large_table, migrations.RunPython.noop),
     ]
 ```
 
 ### Conditional Data Migration
 
 ```python
-def migrate_user_data(apps, schema_editor):
-    """Migrate user data with conditions"""
+def create_profiles(apps, schema_editor):
+    """Create profiles for users who don't have one"""
     User = apps.get_model('auth', 'User')
     Profile = apps.get_model('myapp', 'Profile')
 
     for user in User.objects.filter(is_active=True):
-        # Check if profile exists
-        if not Profile.objects.filter(user=user).exists():
-            Profile.objects.create(
-                user=user,
-                bio='',
-                notification_enabled=True
-            )
+        Profile.objects.get_or_create(
+            user=user,
+            defaults={'bio': '', 'notification_enabled': True}
+        )
 
 class Migration(migrations.Migration):
     dependencies = [
@@ -405,311 +217,75 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RunPython(migrate_user_data, migrations.RunPython.noop),
+        migrations.RunPython(create_profiles, migrations.RunPython.noop),
     ]
 ```
 
-### Raw SQL Migration
+## Migration Conflicts
+
+### Detecting and Resolving
+
+```bash
+# Check for conflicts
+python manage.py migrate --check
+
+# Auto-merge (when safe)
+python manage.py makemigrations --merge
+
+# Show migration plan
+python manage.py showmigrations --plan
+```
+
+### Merge Migration
 
 ```python
-def run_sql(apps, schema_editor):
-    """Run raw SQL for complex data transformation"""
-    # Use parameterized queries to prevent SQL injection
-    with schema_editor.connection.cursor() as cursor:
-        cursor.execute("""
-            UPDATE myapp_article
-            SET view_count = COALESCE(
-                (SELECT COUNT(*) FROM myapp_view WHERE article_id = myapp_article.id),
-                0
-            )
-        """)
-
 class Migration(migrations.Migration):
+    """Merge migration for parallel branches"""
+
     dependencies = [
-        ('myapp', '0006_article_view_count'),
+        ('myapp', '0004_add_status'),    # Branch A
+        ('myapp', '0004_add_category'),  # Branch B
     ]
 
     operations = [
-        migrations.RunSQL(
-            # Forward SQL
-            """
-            UPDATE myapp_article
-            SET view_count = COALESCE(
-                (SELECT COUNT(*) FROM myapp_view WHERE article_id = myapp_article.id),
-                0
-            )
-            """,
-            # Reverse SQL
-            """
-            UPDATE myapp_article SET view_count = 0
-            """
-        ),
-    ]
-```
-
-## Complex Migration Patterns
-
-### Three-Step Field Migration
-
-**Scenario:** Changing a field type or making a nullable field non-nullable with existing data.
-
-```python
-# Step 1: Add new field as nullable
-class Migration(migrations.Migration):
-    dependencies = [('myapp', '0001_initial')]
-
-    operations = [
-        migrations.AddField(
-            model_name='article',
-            name='status_new',
-            field=models.CharField(max_length=20, null=True),
-        ),
-    ]
-
-# Step 2: Copy data from old field to new field
-class Migration(migrations.Migration):
-    dependencies = [('myapp', '0002_add_status_new')]
-
-    operations = [
-        migrations.RunPython(
-            lambda apps, schema_editor: apps.get_model('myapp', 'Article')
-                .objects.all().update(status_new=models.F('status_old')),
-            migrations.RunPython.noop
-        ),
-    ]
-
-# Step 3: Remove old field, rename new field
-class Migration(migrations.Migration):
-    dependencies = [('myapp', '0003_copy_status_data')]
-
-    operations = [
-        migrations.RemoveField(model_name='article', name='status_old'),
-        migrations.RenameField(
-            model_name='article',
-            old_name='status_new',
-            new_name='status',
-        ),
-        # Make non-nullable if needed
-        migrations.AlterField(
-            model_name='article',
-            name='status',
-            field=models.CharField(max_length=20, default='draft'),
-        ),
-    ]
-```
-
-### Splitting a Model
-
-```python
-# Original: Article model with user fields
-# Goal: Split into Article and Author models
-
-# Step 1: Create Author model
-class Migration(migrations.Migration):
-    operations = [
-        migrations.CreateModel(
-            name='Author',
-            fields=[
-                ('id', models.AutoField(primary_key=True)),
-                ('name', models.CharField(max_length=100)),
-                ('email', models.EmailField()),
-            ],
-        ),
-    ]
-
-# Step 2: Add ForeignKey to Article
-class Migration(migrations.Migration):
-    operations = [
-        migrations.AddField(
-            model_name='article',
-            name='author',
-            field=models.ForeignKey(
-                'Author',
-                on_delete=models.CASCADE,
-                null=True
-            ),
-        ),
-    ]
-
-# Step 3: Migrate data
-def create_authors(apps, schema_editor):
-    Article = apps.get_model('myapp', 'Article')
-    Author = apps.get_model('myapp', 'Author')
-
-    # Get unique author info from articles
-    author_map = {}
-    for article in Article.objects.all():
-        key = (article.author_name, article.author_email)
-        if key not in author_map:
-            author = Author.objects.create(
-                name=article.author_name,
-                email=article.author_email
-            )
-            author_map[key] = author
-        else:
-            author = author_map[key]
-
-        article.author = author
-        article.save(update_fields=['author'])
-
-class Migration(migrations.Migration):
-    operations = [
-        migrations.RunPython(create_authors, migrations.RunPython.noop),
-    ]
-
-# Step 4: Remove old fields
-class Migration(migrations.Migration):
-    operations = [
-        migrations.RemoveField(model_name='article', name='author_name'),
-        migrations.RemoveField(model_name='article', name='author_email'),
-        migrations.AlterField(
-            model_name='article',
-            name='author',
-            field=models.ForeignKey('Author', on_delete=models.CASCADE),
-        ),
-    ]
-```
-
-### Zero-Downtime Migration
-
-**Scenario:** Rename a field without downtime.
-
-```python
-# Step 1: Add new field (deploy this first)
-class Migration(migrations.Migration):
-    operations = [
-        migrations.AddField(
-            model_name='article',
-            name='publication_date',
-            field=models.DateField(null=True),
-        ),
-    ]
-
-# Update code to write to both fields:
-# article.publish_date = date
-# article.publication_date = date
-# article.save()
-
-# Step 2: Backfill data (deploy after step 1)
-class Migration(migrations.Migration):
-    operations = [
-        migrations.RunPython(
-            lambda apps, schema_editor: apps.get_model('myapp', 'Article')
-                .objects.all().update(publication_date=models.F('publish_date')),
-            migrations.RunPython.noop
-        ),
-    ]
-
-# Update code to read from new field only
-
-# Step 3: Remove old field (deploy after all instances updated)
-class Migration(migrations.Migration):
-    operations = [
-        migrations.RemoveField(model_name='article', name='publish_date'),
+        # Empty if branches don't conflict
+        # Django marks both as applied
     ]
 ```
 
 ## Rollback Strategies
 
-### Rollback Migrations
+### Rolling Back
 
 ```bash
 # Rollback to specific migration
 python manage.py migrate myapp 0003
 
-# Rollback all migrations in app
+# Rollback all migrations
 python manage.py migrate myapp zero
 
-# Show what would be rolled back
+# Show rollback plan
 python manage.py migrate myapp 0003 --plan
 ```
 
 ### Reversible Data Migrations
 
 ```python
-def forward_migration(apps, schema_editor):
-    """Forward: Convert status codes"""
-    Article = apps.get_model('myapp', 'Article')
-
-    mapping = {
-        'P': 'published',
-        'D': 'draft',
-        'A': 'archived',
-    }
-
-    for old_status, new_status in mapping.items():
-        Article.objects.filter(status_code=old_status).update(status=new_status)
-
-def reverse_migration(apps, schema_editor):
-    """Reverse: Convert back to codes"""
-    Article = apps.get_model('myapp', 'Article')
-
-    mapping = {
-        'published': 'P',
-        'draft': 'D',
-        'archived': 'A',
-    }
-
-    for old_status, new_status in mapping.items():
-        Article.objects.filter(status=old_status).update(status_code=new_status)
-
-class Migration(migrations.Migration):
-    operations = [
-        migrations.RunPython(forward_migration, reverse_migration),
-    ]
-```
-
-### Irreversible Migrations
-
-```python
-# Migration that can't be reversed
-class Migration(migrations.Migration):
-    operations = [
-        migrations.RunPython(
-            delete_old_data,
-            reverse_code=migrations.RunPython.noop  # Can't reverse
-        ),
-    ]
-
-# Or mark as irreversible
-class Migration(migrations.Migration):
-    operations = [
-        migrations.RunSQL(
-            "DELETE FROM myapp_article WHERE status = 'deleted'",
-            reverse_sql=migrations.RunSQL.noop  # Can't reverse
-        ),
-    ]
-```
-
-### Safe Rollback Pattern
-
-```python
 def forward(apps, schema_editor):
-    """Forward migration with safety checks"""
+    """Convert codes to strings"""
     Article = apps.get_model('myapp', 'Article')
 
-    # Store original values for potential rollback
-    # (in a separate table or JSON field)
-    for article in Article.objects.all():
-        ArticleBackup.objects.create(
-            article_id=article.id,
-            original_data={'status': article.status}
-        )
-
-    # Perform migration
-    Article.objects.all().update(status='published')
+    mapping = {'P': 'published', 'D': 'draft', 'A': 'archived'}
+    for old, new in mapping.items():
+        Article.objects.filter(status_code=old).update(status=new)
 
 def reverse(apps, schema_editor):
-    """Reverse using backup data"""
+    """Convert strings back to codes"""
     Article = apps.get_model('myapp', 'Article')
-    ArticleBackup = apps.get_model('myapp', 'ArticleBackup')
 
-    for backup in ArticleBackup.objects.all():
-        Article.objects.filter(id=backup.article_id).update(
-            status=backup.original_data['status']
-        )
-
-    ArticleBackup.objects.all().delete()
+    mapping = {'published': 'P', 'draft': 'D', 'archived': 'A'}
+    for old, new in mapping.items():
+        Article.objects.filter(status=old).update(status_code=new)
 
 class Migration(migrations.Migration):
     operations = [
@@ -717,125 +293,45 @@ class Migration(migrations.Migration):
     ]
 ```
 
-## Migration Conflicts
-
-### Detecting Conflicts
-
-```bash
-# Check for conflicting migrations
-python manage.py migrate --check
-
-# Show migration graph
-python manage.py showmigrations --plan
-```
-
-### Resolving Conflicts
-
-```bash
-# Automatic merge
-python manage.py makemigrations --merge
-
-# Manual merge (edit the generated migration file)
-```
-
-### Merge Migration Example
-
-```python
-class Migration(migrations.Migration):
-    """Merge migration resolving parallel branches"""
-
-    dependencies = [
-        ('myapp', '0004_add_status'),  # Branch A
-        ('myapp', '0004_add_category'),  # Branch B (same number)
-    ]
-
-    operations = [
-        # No operations needed if branches don't conflict
-        # Django will just mark both as applied
-    ]
-```
-
-### Handling Migration Conflicts in Teams
-
-```python
-# .git/hooks/post-merge (Git hook)
-#!/bin/bash
-# Check for migration conflicts after merge
-
-python manage.py makemigrations --check --dry-run
-if [ $? -ne 0 ]; then
-    echo "⚠️  Migration conflicts detected!"
-    echo "Run: python manage.py makemigrations --merge"
-fi
-```
-
 ## Best Practices
 
-### 1. Always Test Migrations
+### 1. Always Test Migrations First
 
-```python
-# Test migration locally first
-python manage.py migrate --plan  # Review plan
-python manage.py migrate  # Apply
-
-# Test rollback
-python manage.py migrate myapp 0003
+```bash
+# Test locally on production snapshot
+python manage.py migrate --plan  # Review
+python manage.py migrate         # Apply
+python manage.py migrate myapp 0003  # Test rollback
 python manage.py migrate myapp 0004  # Re-apply
 ```
 
 ### 2. Backup Before Major Migrations
 
 ```bash
-# PostgreSQL backup
-pg_dump dbname > backup_before_migration.sql
+# PostgreSQL
+pg_dump dbname > backup_$(date +%Y%m%d).sql
 
-# MySQL backup
-mysqldump -u user -p dbname > backup_before_migration.sql
+# MySQL
+mysqldump -u user -p dbname > backup_$(date +%Y%m%d).sql
 
-# SQLite backup
-cp db.sqlite3 db.sqlite3.backup
+# SQLite
+cp db.sqlite3 db.sqlite3.backup_$(date +%Y%m%d)
 ```
 
-### 3. Use Transactions for Data Migrations
+### 3. Use Transactions (Default)
 
 ```python
 class Migration(migrations.Migration):
-    atomic = True  # Default: True
+    atomic = True  # Default - rollback on error
 
-    operations = [
-        migrations.RunPython(
-            migrate_data,
-            reverse_code=reverse_migrate_data
-        ),
-    ]
+    operations = [...]
 
-# For MySQL (doesn't support DDL in transactions)
+# Disable only when required (e.g., CONCURRENT indexes)
 class Migration(migrations.Migration):
-    atomic = False  # Required for some MySQL operations
+    atomic = False
 ```
 
-### 4. Batch Process Large Data Migrations
-
-```python
-def migrate_large_table(apps, schema_editor):
-    """Migrate large table in batches"""
-    Article = apps.get_model('myapp', 'Article')
-
-    batch_size = 5000
-    total = Article.objects.count()
-
-    for offset in range(0, total, batch_size):
-        batch = Article.objects.all()[offset:offset + batch_size]
-        for article in batch:
-            # Process article
-            article.status = 'published'
-        Article.objects.bulk_update(batch, ['status'])
-
-        # Log progress
-        print(f"Processed {offset + batch_size}/{total}")
-```
-
-### 5. Separate Schema and Data Migrations
+### 4. Separate Schema and Data Migrations
 
 ```python
 # Migration 0005: Schema change
@@ -850,103 +346,149 @@ class Migration(migrations.Migration):
         migrations.RunPython(populate_status, reverse_populate_status),
     ]
 
-# Easier to rollback and test separately
+# Easier to test and rollback separately
 ```
 
-### 6. Document Complex Migrations
+### 5. Document Complex Migrations
 
 ```python
 class Migration(migrations.Migration):
     """
-    Migrate article status from integer codes to string values.
+    Migrate article status from codes to strings.
 
-    This migration:
-    1. Adds new 'status' field (CharField)
-    2. Converts status_code values (1='draft', 2='published', 3='archived')
-    3. Removes old 'status_code' field
+    Changes:
+    1. Adds 'status' CharField
+    2. Converts codes: P->published, D->draft, A->archived
+    3. Removes 'status_code' field
 
-    Rollback: Converts back to integer codes.
-
-    Safe to run multiple times (idempotent).
-    Estimated time: ~5 minutes for 1M articles.
+    Rollback: Converts strings back to codes
+    Safe to re-run: Yes (idempotent)
+    Estimated time: ~2 min for 100K articles
     """
 
-    dependencies = [('myapp', '0007_add_status_field')]
+    operations = [...]
+```
 
+### 6. Handle Large Tables Carefully
+
+```python
+# Process in batches
+def migrate_in_batches(apps, schema_editor):
+    Model = apps.get_model('myapp', 'Model')
+
+    batch_size = 5000
+    queryset = Model.objects.filter(needs_update=True)
+
+    while queryset.exists():
+        batch_ids = list(queryset[:batch_size].values_list('id', flat=True))
+        Model.objects.filter(id__in=batch_ids).update(field='value')
+```
+
+### 7. Use Constraints for Data Integrity
+
+```python
+# Add constraints to prevent bad data
+migrations.AddConstraint(
+    model_name='article',
+    constraint=models.CheckConstraint(
+        check=models.Q(views__gte=0),
+        name='views_non_negative'
+    ),
+)
+
+migrations.AddConstraint(
+    model_name='article',
+    constraint=models.UniqueConstraint(
+        fields=['author', 'slug'],
+        name='unique_author_slug'
+    ),
+)
+```
+
+## Common Pitfalls
+
+### ❌ Changing Field Type Without Data Migration
+
+```python
+# BAD: Direct type change loses data
+migrations.AlterField(
+    model_name='article',
+    name='price',
+    field=models.DecimalField(max_digits=10, decimal_places=2),
+)
+# If price was CharField, data conversion may fail!
+
+# GOOD: Three-step migration
+# 1. Add new field
+# 2. Copy and convert data
+# 3. Remove old field, rename new field
+```
+
+### ❌ Non-Atomic Operations Without atomic=False
+
+```python
+# BAD: CONCURRENT index without atomic=False
+class Migration(migrations.Migration):
     operations = [
-        migrations.RunPython(convert_status_codes, reverse_convert),
+        AddIndexConcurrently(...)  # Fails!
+    ]
+
+# GOOD: Set atomic=False
+class Migration(migrations.Migration):
+    atomic = False
+    operations = [
+        AddIndexConcurrently(...)
     ]
 ```
 
-### 7. Squash Migrations Periodically
+### ❌ Referencing Models Directly
+
+```python
+# BAD: Direct model import
+from myapp.models import Article
+
+def migrate_data(apps, schema_editor):
+    for article in Article.objects.all():  # Wrong!
+        pass
+
+# GOOD: Use apps.get_model()
+def migrate_data(apps, schema_editor):
+    Article = apps.get_model('myapp', 'Article')
+    for article in Article.objects.all():  # Correct!
+        pass
+```
+
+### ❌ Not Testing Rollback
+
+```python
+# Always provide reverse migration or use noop
+migrations.RunPython(
+    forward_func,
+    migrations.RunPython.noop  # If can't reverse
+)
+
+# Better: Provide actual reverse
+migrations.RunPython(forward_func, reverse_func)
+```
+
+## Emergency Procedures
+
+### Mark Migration as Applied (Use with Caution)
 
 ```bash
-# Squash multiple migrations into one
+# If migration already applied manually
+python manage.py migrate --fake myapp 0005
+
+# Fake to specific migration
+python manage.py migrate --fake myapp 0003
+```
+
+### Squash Migrations (Cleanup)
+
+```bash
+# Combine migrations 0001-0010 into one
 python manage.py squashmigrations myapp 0001 0010
 
-# Creates a new migration that replaces 0001-0010
-# Useful for cleaning up development migrations
-```
-
-### 8. Test on Production-Like Data
-
-```python
-# Load production data snapshot
-python manage.py loaddata production_snapshot.json
-
-# Test migration
-python manage.py migrate
-
-# Verify data integrity
-python manage.py check
-python manage.py validate_articles  # Custom command
-```
-
-### 9. Monitor Migration Performance
-
-```python
-import time
-from django.db import migrations
-
-def timed_migration(apps, schema_editor):
-    """Data migration with timing"""
-    start = time.time()
-
-    # Perform migration
-    migrate_data(apps, schema_editor)
-
-    elapsed = time.time() - start
-    print(f"Migration completed in {elapsed:.2f} seconds")
-
-class Migration(migrations.Migration):
-    operations = [
-        migrations.RunPython(timed_migration, migrations.RunPython.noop),
-    ]
-```
-
-### 10. Handle Migration Failures Gracefully
-
-```python
-def safe_migration(apps, schema_editor):
-    """Migration with error handling"""
-    Article = apps.get_model('myapp', 'Article')
-
-    errors = []
-    for article in Article.objects.all():
-        try:
-            # Migrate article
-            article.status = calculate_status(article)
-            article.save()
-        except Exception as e:
-            errors.append(f"Article {article.id}: {str(e)}")
-
-    if errors:
-        print("⚠️  Migration completed with errors:")
-        for error in errors:
-            print(f"  - {error}")
-
-class Migration(migrations.Migration):
-    operations = [
-        migrations.RunPython(safe_migration, migrations.RunPython.noop),
-    ]
+# Useful after many development migrations
+# Test thoroughly before deploying!
 ```
