@@ -271,7 +271,12 @@ class ArticleAdmin(admin.ModelAdmin):
 Collect additional input before processing:
 
 ```python
+from decimal import Decimal
+
 from django import forms
+from django.db import transaction
+from django.db.models import DecimalField, F
+from django.db.models.expressions import ExpressionWrapper
 from django.shortcuts import render, redirect
 from django.urls import path
 
@@ -303,20 +308,26 @@ class ProductAdmin(admin.ModelAdmin):
 
     def bulk_price_update_view(self, request):
         product_ids = request.session.get('bulk_price_update_ids', [])
-        products = Product.objects.filter(pk__in=product_ids)
+        product_count = Product.objects.filter(pk__in=product_ids).count()
 
         if request.method == 'POST':
             form = BulkPriceUpdateForm(request.POST)
             if form.is_valid():
                 adjustment = form.cleaned_data['price_adjustment']
+                multiplier = Decimal('1') + Decimal(adjustment) / Decimal('100')
 
-                for product in products:
-                    product.price *= (1 + adjustment / 100)
-                    product.save()
+                # Single atomic update instead of N+1 saves
+                with transaction.atomic():
+                    Product.objects.filter(pk__in=product_ids).update(
+                        price=ExpressionWrapper(
+                            F('price') * multiplier,
+                            output_field=DecimalField()
+                        )
+                    )
 
                 self.message_user(
                     request,
-                    f"Updated prices for {products.count()} products."
+                    f"Updated prices for {product_count} products."
                 )
                 del request.session['bulk_price_update_ids']
                 return redirect('..')
@@ -327,7 +338,7 @@ class ProductAdmin(admin.ModelAdmin):
             **self.admin_site.each_context(request),
             'title': 'Bulk Price Update',
             'form': form,
-            'products': products,
+            'products': Product.objects.filter(pk__in=product_ids),
         }
         return render(request, 'admin/bulk_price_update.html', context)
 
