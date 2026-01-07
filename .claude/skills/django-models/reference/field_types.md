@@ -1,8 +1,6 @@
 # Django Field Types Quick Reference
 
-Quick reference for Django model field types and common options.
-
-## Field Types Table
+## Field Types
 
 | Field Type | Use Case | Database Type | Key Options |
 |-----------|----------|---------------|-------------|
@@ -34,22 +32,12 @@ Quick reference for Django model field types and common options.
 ### Required vs Optional
 
 ```python
-# Required field (default)
-title = models.CharField(max_length=200)
-
-# Optional with null in database
-author = models.ForeignKey(Author, on_delete=models.SET_NULL, null=True)
-
-# Optional in forms only
+# Text fields: Use blank=True only (avoid null=True)
 description = models.TextField(blank=True)
 
-# Optional in both
-notes = models.TextField(null=True, blank=True)
+# Non-text fields: Use both null=True, blank=True
+author = models.ForeignKey(Author, on_delete=models.SET_NULL, null=True, blank=True)
 ```
-
-**Rules:**
-- Text fields: Use `blank=True` only (avoid null=True)
-- Non-text fields: Use both `null=True, blank=True`
 
 ### Defaults
 
@@ -106,127 +94,26 @@ class Article(models.Model):
     )
 ```
 
-## Relationship Fields
-
-### ForeignKey (Many-to-One)
+## ForeignKey on_delete Options
 
 ```python
-class Book(models.Model):
-    author = models.ForeignKey(
-        Author,
-        on_delete=models.CASCADE,      # Delete books when author deleted
-        related_name='books'            # Access via author.books.all()
-    )
-
-# on_delete options:
 # CASCADE - Delete related objects
-# PROTECT - Prevent deletion
+# PROTECT - Prevent deletion (raises error)
 # SET_NULL - Set to NULL (requires null=True)
 # SET_DEFAULT - Set to default (requires default)
 # SET() - Set to callable result
 # DO_NOTHING - Database integrity error
-```
 
-### ManyToManyField
-
-```python
-class Article(models.Model):
-    tags = models.ManyToManyField(
-        'Tag',
-        related_name='articles',
-        blank=True                      # Allow empty in forms
-    )
-
-# Usage:
-article.tags.add(tag1, tag2)
-article.tags.remove(tag1)
-article.tags.set([tag1, tag2])
-article.tags.clear()
-```
-
-### OneToOneField
-
-```python
-class Profile(models.Model):
-    user = models.OneToOneField(
-        User,
-        on_delete=models.CASCADE,
-        related_name='profile'
-    )
-
-# Usage:
-user.profile  # Access profile
-profile.user  # Access user
-```
-
-## Common Patterns
-
-### Timestamps
-
-```python
-class TimestampedModel(models.Model):
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        abstract = True
-
-class Article(TimestampedModel):
-    title = models.CharField(max_length=200)
-```
-
-### Money Fields
-
-```python
-class Product(models.Model):
-    price = models.DecimalField(
-        max_digits=10,        # Total digits: 99999999.99
-        decimal_places=2      # Cents
-    )
-```
-
-### Validation
-
-```python
-from django.core.validators import MinValueValidator, MaxValueValidator
-
-class Product(models.Model):
-    price = models.DecimalField(
-        max_digits=10,
-        decimal_places=2,
-        validators=[MinValueValidator(0)]
-    )
-
-    rating = models.IntegerField(
-        validators=[MinValueValidator(1), MaxValueValidator(5)]
-    )
+author = models.ForeignKey(Author, on_delete=models.CASCADE)
 ```
 
 ## Performance Tips
 
-1. **Index frequently filtered fields**
-   ```python
-   status = models.CharField(max_length=20, db_index=True)
-   ```
+```python
+# Use CharField (not TextField) for filterable short content
+status = models.CharField(max_length=20, db_index=True)
 
-2. **Use appropriate field sizes**
-   ```python
-   # Bad: Wastes space
-   count = models.BigIntegerField()
-
-   # Good: Right size
-   count = models.PositiveIntegerField()
-   ```
-
-3. **Choose CharField over TextField for short content**
-   ```python
-   # Good for filtering
-   status = models.CharField(max_length=20, db_index=True)
-
-   # Avoid for status fields (harder to index)
-   # status = models.TextField()
-   ```
-
-4. **Integer vs UUID primary keys**
-   - **Integer**: Faster, smaller (4 bytes), sequential
-   - **UUID**: Larger (16 bytes), non-guessable, distributed systems
+# Integer vs UUID primary keys:
+# - Integer: 4 bytes, faster, sequential
+# - UUID: 16 bytes, non-guessable, distributed systems
+```

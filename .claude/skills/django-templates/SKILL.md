@@ -44,172 +44,92 @@ Create a base template with inheritance:
 {% endblock %}
 ```
 
-## Template Inheritance
+## Django-Specific Patterns
 
-### extends and block
+### Template Inheritance
 
-Use `{% extends %}` to inherit from a parent template:
-
-```django
-{% extends "base.html" %}
-
-{% block content %}
-    <h1>My Page</h1>
-{% endblock %}
-```
-
-**Include parent content with `{{ block.super }}`:**
+**Include parent block content:**
 ```django
 {% block title %}Dashboard - {{ block.super }}{% endblock %}
 ```
 
 **Common block names:**
-- `title` - Page title
-- `content` - Main content area
-- `extra_head` - Additional CSS/meta tags
-- `extra_js` - Additional JavaScript
+- `title`, `content`, `extra_head`, `extra_js`
 
-### include
-
-Include reusable template fragments:
-
+**Include with isolated context:**
 ```django
-{% include "partials/nav.html" %}
-{% include "components/card.html" with title="Profile" %}
-{% include "components/form.html" with form=user_form only %}
+{% include "form.html" with form=user_form only %}
 ```
 
-## Common Tags
+### Loop Variables
 
-### Control Flow
-
-**if/elif/else:**
-```django
-{% if user.is_authenticated %}
-    <p>Welcome, {{ user.username }}!</p>
-{% elif user.is_staff %}
-    <p>Staff access</p>
-{% else %}
-    <p>Please log in</p>
-{% endif %}
-```
-
-**for loops:**
 ```django
 {% for item in items %}
-    <li>{{ forloop.counter }}. {{ item.name }}</li>
+    {{ forloop.counter }}      {# 1-indexed #}
+    {{ forloop.counter0 }}     {# 0-indexed #}
+    {{ forloop.first }}        {# Boolean #}
+    {{ forloop.last }}         {# Boolean #}
 {% empty %}
     <li>No items found</li>
 {% endfor %}
 ```
 
-**Loop variables:**
-- `{{ forloop.counter }}` - 1-indexed iteration count
-- `{{ forloop.first }}` - True on first iteration
-- `{{ forloop.last }}` - True on last iteration
+### URL Tag with Namespaces
 
-### URLs and Static Files
-
-**Generate URLs:**
 ```django
-<a href="{% url 'article_detail' article.pk %}">Read more</a>
-<a href="{% url 'blog:post_list' %}">Blog</a>
+{% url 'article_detail' article.pk %}          {# Positional #}
+{% url 'blog:post_list' %}                     {# Namespace #}
+{% url 'edit' pk=article.pk slug=article.slug %} {# Named args #}
 ```
 
-**Static files:**
+### Static Files
+
 ```django
 {% load static %}
-<img src="{% static 'images/logo.png' %}" alt="Logo">
-<link rel="stylesheet" href="{% static 'css/style.css' %}">
+<img src="{% static 'images/logo.png' %}">
 ```
 
-### Forms
+### CSRF Token (Required)
 
-**Always include CSRF token in POST forms:**
 ```django
 <form method="post">
-    {% csrf_token %}
+    {% csrf_token %}  {# Always required for POST #}
     {{ form.as_p }}
-    <button type="submit">Submit</button>
 </form>
 ```
 
-### Variable Caching
-
-Use `{% with %}` to cache expensive operations:
+### Cache Expensive Operations
 
 ```django
 {% with total=items.count %}
-    <p>{{ total }} item{{ total|pluralize }}</p>
+    {{ total }} item{{ total|pluralize }}
 {% endwith %}
 ```
 
-## Common Filters
+## Key Filters
 
-### String Manipulation
+### Defaults
 ```django
-{{ text|lower }}                    {# Lowercase #}
-{{ text|upper }}                    {# Uppercase #}
-{{ text|title }}                    {# Title Case #}
-{{ text|truncatewords:30 }}         {# Truncate to 30 words #}
-{{ text|truncatechars:100 }}        {# Truncate to 100 chars #}
+{{ value|default:"N/A" }}           {# Falsy values #}
+{{ value|default_if_none:"N/A" }}   {# Only None #}
 ```
 
-### Dates
+### Pluralization
 ```django
-{{ post.created|date:"Y-m-d" }}     {# 2024-03-15 #}
-{{ post.created|date:"F j, Y" }}    {# March 15, 2024 #}
-{{ post.created|timesince }}        {# 3 hours ago #}
-```
-
-### Lists
-```django
-{{ items|length }}                  {# Count #}
-{{ items|first }}                   {# First item #}
-{{ items|last }}                    {# Last item #}
-{{ items|join:", " }}               {# Join with comma #}
-```
-
-### Defaults and Logic
-```django
-{{ value|default:"N/A" }}           {# Default if falsy #}
-{{ value|default_if_none:"N/A" }}   {# Default if None #}
 {{ count|pluralize }}               {# 's' for plurals #}
 {{ count|pluralize:"y,ies" }}       {# candy/candies #}
 ```
 
 ### Safety
 ```django
-{{ text }}                          {# Auto-escaped (safe) #}
-{{ html|safe }}                     {# Mark as safe - trusted only! #}
-{{ text|escape }}                   {# Force escape #}
-{{ text|striptags }}                {# Remove HTML tags #}
+{{ text }}                          {# Auto-escaped #}
+{{ html|safe }}                     {# NEVER on user input! #}
 ```
 
-## Context Basics
-
-Templates receive context from views:
-
-```python
-# views.py
-def article_detail(request, pk):
-    article = get_object_or_404(Article, pk=pk)
-    return render(request, 'article_detail.html', {
-        'article': article,
-        'related': article.related_articles.all()[:5],
-    })
-```
-
-Access in template:
+### Dates
 ```django
-<h1>{{ article.title }}</h1>
-<p>By {{ article.author.name }}</p>
-<p>{{ article.content|safe }}</p>
-
-<h2>Related Articles</h2>
-{% for item in related %}
-    <a href="{% url 'article_detail' item.pk %}">{{ item.title }}</a>
-{% endfor %}
+{{ post.created|date:"Y-m-d" }}     {# 2024-03-15 #}
+{{ post.created|timesince }}        {# 3 hours ago #}
 ```
 
 ## Best Practices

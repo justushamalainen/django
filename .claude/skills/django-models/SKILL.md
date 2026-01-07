@@ -1,21 +1,5 @@
 # Django Models & ORM Skill
 
-Essential Django ORM patterns for everyday development.
-
-## When to Use This Skill
-
-**Use this skill for:**
-- Creating or modifying model schemas
-- Optimizing database queries (N+1 problems)
-- Working with relationships (ForeignKey, ManyToMany, OneToOne)
-- Writing efficient QuerySets
-- Handling migrations safely
-
-**Use other skills for:**
-- Views and business logic (django-views)
-- Admin customization (django-admin)
-- Forms (django-forms)
-
 ## Quick Model Definition
 
 ### Basic Model
@@ -93,35 +77,21 @@ class Profile(models.Model):
 
 ## N+1 Query Detection
 
-**The Problem:** Loading related objects in a loop causes extra queries.
-
 ```python
 # BAD: N+1 queries
 articles = Article.objects.all()  # 1 query
 for article in articles:
     print(article.author.name)    # N queries!
-```
 
-**The Solutions:**
-
-```python
-# GOOD: Use select_related for ForeignKey/OneToOne
+# GOOD: select_related for ForeignKey/OneToOne (SQL JOIN)
 articles = Article.objects.select_related('author')
-for article in articles:
-    print(article.author.name)    # No extra queries
 
-# GOOD: Use prefetch_related for ManyToMany/reverse FK
+# GOOD: prefetch_related for ManyToMany/reverse FK (separate queries)
 articles = Article.objects.prefetch_related('tags')
-for article in articles:
-    print([t.name for t in article.tags.all()])  # No extra queries
 
 # Combine both
 articles = Article.objects.select_related('author').prefetch_related('tags')
 ```
-
-**When to use each:**
-- `select_related()`: ForeignKey, OneToOneField (uses SQL JOIN)
-- `prefetch_related()`: ManyToManyField, reverse ForeignKey (separate queries)
 
 ## Common Query Patterns
 
@@ -186,32 +156,15 @@ Article.objects.bulk_create([
 Article.objects.filter(status='draft').update(status='published')
 ```
 
-## Migration Basics
-
-### Common Workflow: Add Field to Model
+## Safe Migration Pattern for Non-Nullable Fields
 
 ```python
-# 1. Add field to model
-class Article(models.Model):
-    title = models.CharField(max_length=200)
-    status = models.CharField(max_length=20, default='draft')  # New field
-
-# 2. Generate migration
-# $ python manage.py makemigrations
-
-# 3. Review and apply
-# $ python manage.py migrate
-```
-
-### Adding Non-Nullable Field (Safe Pattern)
-
-```python
-# If table has existing data, use 3 steps:
+# When table has existing data, use 3 steps:
 
 # Step 1: Add as nullable
 status = models.CharField(max_length=20, null=True)
 
-# Step 2: Create data migration to populate values
+# Step 2: Data migration to populate values
 def populate_status(apps, schema_editor):
     Article = apps.get_model('myapp', 'Article')
     Article.objects.filter(status__isnull=True).update(status='draft')
@@ -220,39 +173,7 @@ def populate_status(apps, schema_editor):
 status = models.CharField(max_length=20, default='draft')
 ```
 
-### Migration Commands
-
-```bash
-# Create migration
-python manage.py makemigrations myapp
-
-# Apply migrations
-python manage.py migrate
-
-# Check status
-python manage.py showmigrations
-
-# Rollback to specific migration
-python manage.py migrate myapp 0003
-
-# Merge conflicts
-python manage.py makemigrations --merge
-```
-
-## Field Types Quick Reference
-
-| Field | Use For | Example |
-|-------|---------|---------|
-| CharField | Short text | `models.CharField(max_length=200)` |
-| TextField | Long text | `models.TextField()` |
-| IntegerField | Numbers | `models.IntegerField(default=0)` |
-| BooleanField | True/False | `models.BooleanField(default=False)` |
-| DateTimeField | Timestamps | `models.DateTimeField(auto_now_add=True)` |
-| DecimalField | Money | `models.DecimalField(max_digits=10, decimal_places=2)` |
-| ForeignKey | Many-to-one | `models.ForeignKey(Author, on_delete=models.CASCADE)` |
-| ManyToManyField | Many-to-many | `models.ManyToManyField('Tag', blank=True)` |
-
-See [field_types.md](reference/field_types.md) for complete reference.
+See [migration_ops.md](reference/migration_ops.md) for migration patterns.
 
 ## Anti-Patterns to Avoid
 
@@ -286,8 +207,3 @@ article.save()
 Article.objects.filter(pk=article.pk).update(views=F('views') + 1)
 ```
 
-## Reference Files
-
-- [field_types.md](reference/field_types.md) - All field types and options
-- [query_patterns.md](reference/query_patterns.md) - The 5 essential query optimization patterns
-- [migration_ops.md](reference/migration_ops.md) - Safe migration patterns for production

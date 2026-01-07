@@ -1,9 +1,5 @@
 # Django Testing Skill
 
-## Overview
-
-Write fast, reliable tests for Django applications. This skill covers test class selection, client testing, mocking, and common assertions.
-
 ## Quick Start
 
 ```python
@@ -51,23 +47,14 @@ class URLTests(SimpleTestCase):
         self.assertEqual(url, '/')
 ```
 
-**Use for:** URLs, form validation, template tags, utilities
-
 ### TestCase - Standard Tests (Default)
 
 ```python
-from django.test import TestCase
-
 class ArticleTests(TestCase):
     @classmethod
     def setUpTestData(cls):
         cls.article = Article.objects.create(title='Test')
-
-    def test_article_str(self):
-        self.assertEqual(str(self.article), 'Test')
 ```
-
-**Use for:** 99% of tests with database
 
 ### TransactionTestCase - Transaction Testing
 
@@ -85,8 +72,6 @@ class PaymentTests(TransactionTestCase):
             pass
         self.assertEqual(Payment.objects.count(), 0)
 ```
-
-**Use for:** Testing transaction.atomic() behavior (rare)
 
 **See:** [reference/test_classes.md](reference/test_classes.md) for complete guide.
 
@@ -266,122 +251,13 @@ def test_time_dependent(self, mock_now):
 
 **See:** [reference/mocking.md](reference/mocking.md) for comprehensive patterns.
 
-## Common Patterns
-
-### Testing Permissions
-
-```python
-def test_anonymous_cannot_create(self):
-    response = self.client.post('/articles/create/', {'title': 'Test'})
-    self.assertEqual(response.status_code, 302)  # Redirect to login
-
-def test_user_can_create(self):
-    self.client.force_login(self.user)
-    response = self.client.post('/articles/create/', {'title': 'Test'})
-    self.assertEqual(response.status_code, 302)
-    self.assertTrue(Article.objects.filter(title='Test').exists())
-```
-
-### Testing Forms
-
-```python
-def test_valid_form(self):
-    form = ContactForm(data={
-        'name': 'John',
-        'email': 'john@example.com',
-        'message': 'Hello'
-    })
-    self.assertTrue(form.is_valid())
-
-def test_invalid_form(self):
-    form = ContactForm(data={'name': 'John'})  # Missing required fields
-    self.assertFalse(form.is_valid())
-    self.assertIn('email', form.errors)
-```
-
-### Testing Management Commands
-
-```python
-from django.core.management import call_command
-from io import StringIO
-
-def test_command(self):
-    out = StringIO()
-    call_command('mycommand', '--option=value', stdout=out)
-    self.assertIn('Success', out.getvalue())
-```
-
-## Best Practices
-
-### Use Specific Assertions
-
-```python
-# ❌ BAD
-self.assertTrue(response.status_code == 200)
-
-# ✅ GOOD
-self.assertEqual(response.status_code, 200)
-```
-
-### Test One Thing Per Test
-
-```python
-# ❌ BAD - testing multiple things
-def test_article(self):
-    self.assertEqual(article.title, 'Test')
-    self.assertEqual(article.slug, 'test')
-    self.assertTrue(article.published)
-
-# ✅ GOOD - separate tests
-def test_article_title(self):
-    self.assertEqual(article.title, 'Test')
-
-def test_article_slug_generation(self):
-    self.assertEqual(article.slug, 'test')
-```
-
-### Use Descriptive Test Names
-
-```python
-# ❌ BAD
-def test_article(self):
-    pass
-
-# ✅ GOOD
-def test_article_list_view_returns_published_articles_only(self):
-    pass
-```
-
-### Optimize Queries
-
-```python
-def test_no_n_plus_one(self):
-    with self.assertNumQueries(1):
-        articles = Article.objects.select_related('author').all()
-        for article in articles:
-            _ = article.author.username  # No extra queries
-```
-
 ## Running Tests
 
 ```bash
-# Run all tests
-python manage.py test
-
-# Run specific app
-python manage.py test myapp
-
-# Run specific test class
-python manage.py test myapp.tests.ArticleTests
-
-# Run specific test method
-python manage.py test myapp.tests.ArticleTests.test_article_creation
-
-# Run with coverage
-pip install coverage
-coverage run --source='.' manage.py test
-coverage report
-coverage html  # Generate HTML report
+python manage.py test                                          # All tests
+python manage.py test myapp                                    # Specific app
+python manage.py test myapp.tests.ArticleTests                 # Specific class
+python manage.py test myapp.tests.ArticleTests.test_creation   # Specific test
 ```
 
 ## Reference Files

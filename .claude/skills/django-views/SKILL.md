@@ -1,35 +1,13 @@
 # Django Views & URL Routing Skill
 
-## Overview
-
-This skill helps you build Django views (function-based and class-based) and configure URL routing efficiently.
-
-**Use this skill when you need to:**
-- Create CRUD operations
-- Choose between FBV and CBV
-- Configure URL patterns
-- Apply view decorators
+Build Django views (FBV/CBV) and configure URL routing with CRUD operations, decorators, and mixins.
 
 ## FBV vs CBV Decision
 
-```
-Need to handle HTTP request?
-│
-├─ Simple logic, one-time use? → FBV
-│  └─ API endpoint, redirect, form handler
-│
-├─ CRUD operations? → CBV
-│  └─ ListView, DetailView, CreateView, UpdateView, DeleteView
-│
-├─ Reusable behavior? → CBV with mixins
-│  └─ LoginRequiredMixin, PermissionRequiredMixin
-│
-└─ Complex business logic? → FBV
-   └─ CBVs can become hard to follow
-```
-
-**FBV:** Explicit, easier to debug, simpler
-**CBV:** Code reuse, DRY for CRUD, built-in pagination
+- **Simple logic, one-time use?** → FBV
+- **CRUD operations?** → CBV (ListView, DetailView, CreateView, UpdateView, DeleteView)
+- **Reusable behavior?** → CBV with mixins (LoginRequiredMixin, PermissionRequiredMixin)
+- **Complex business logic?** → FBV (CBVs can become hard to follow)
 
 ## Common Generic Views
 
@@ -144,43 +122,21 @@ reverse('blog:list')  # → /blog/
 
 ## Decorator Patterns
 
-### Require Login (FBV)
-
 ```python
 from django.contrib.auth.decorators import login_required
+from django.views.decorators.http import require_http_methods, require_GET, require_POST
 
 @login_required
 def profile(request):
     return render(request, 'profile.html')
-```
-
-### Require HTTP Methods
-
-```python
-from django.views.decorators.http import require_http_methods, require_GET, require_POST
-
-@require_http_methods(["GET", "POST"])
-def article_form(request):
-    if request.method == 'POST':
-        # Handle form
-        pass
-    return render(request, 'form.html')
-
-@require_GET
-def article_list(request):
-    articles = Article.objects.all()
-    return render(request, 'list.html', {'articles': articles})
 
 @require_POST
 def article_delete(request, pk):
     article = get_object_or_404(Article, pk=pk)
     article.delete()
     return redirect('article-list')
-```
 
-### Access Control with CBV
-
-```python
+# CBV access control
 from django.contrib.auth.mixins import LoginRequiredMixin, UserPassesTestMixin
 
 class ArticleUpdateView(LoginRequiredMixin, UserPassesTestMixin, UpdateView):
