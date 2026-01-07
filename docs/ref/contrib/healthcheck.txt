@@ -1,0 +1,168 @@
+==============================
+``django.contrib.healthcheck``
+==============================
+
+.. module:: django.contrib.healthcheck
+   :synopsis: A health check endpoint that bypasses ALLOWED_HOSTS validation.
+
+A Django app that provides a health check endpoint which bypasses
+``ALLOWED_HOSTS`` validation. This is essential for load balancers and
+internal monitoring systems that may not send the expected ``Host`` header
+but still need to verify the application is running.
+
+.. _healthcheck-how-it-works:
+
+How it works
+============
+
+Django validates the ``Host`` header against the :setting:`ALLOWED_HOSTS`
+setting whenever ``request.get_host()`` is called. This validation is triggered
+by several built-in middleware classes (``CommonMiddleware``,
+``SecurityMiddleware``, ``CsrfViewMiddleware``).
+
+The ``HealthCheckMiddleware`` intercepts requests to a configured health check
+URL path early in the request cycle — before any code that would trigger
+``ALLOWED_HOSTS`` validation — and returns a response immediately.
+
+Installation
+============
+
+To enable the health check endpoint:
+
+1. Add ``'django.contrib.healthcheck'`` to your :setting:`INSTALLED_APPS`
+   setting (optional, but enables system checks)::
+
+       INSTALLED_APPS = [
+           ...
+           'django.contrib.healthcheck',
+       ]
+
+2. Add ``'django.contrib.healthcheck.HealthCheckMiddleware'`` as the **first**
+   middleware in your :setting:`MIDDLEWARE` setting::
+
+       MIDDLEWARE = [
+           'django.contrib.healthcheck.HealthCheckMiddleware',
+           'django.middleware.security.SecurityMiddleware',
+           'django.middleware.common.CommonMiddleware',
+           # ... other middleware
+       ]
+
+   .. warning::
+
+      The middleware **must** be placed before any middleware that might call
+      ``request.get_host()``, such as ``SecurityMiddleware``,
+      ``CommonMiddleware``, or ``CsrfViewMiddleware``. Otherwise, the
+      ``ALLOWED_HOSTS`` check will be triggered before the health check can
+      respond.
+
+3. The health check endpoint will be available at ``/-/health/`` by default.
+
+Configuration
+=============
+
+The following settings can be used to customize the health check behavior:
+
+.. setting:: HEALTHCHECK_URL
+
+``HEALTHCHECK_URL``
+-------------------
+
+Default: ``'/-/health/'``
+
+The URL path for the health check endpoint. The path must match exactly
+(including trailing slash).
+
+Example::
+
+    HEALTHCHECK_URL = '/healthz/'
+
+.. setting:: HEALTHCHECK_RESPONSE_TYPE
+
+``HEALTHCHECK_RESPONSE_TYPE``
+-----------------------------
+
+Default: ``'text'``
+
+The response format for the health check endpoint. Valid values are:
+
+* ``'text'``: Returns ``ok`` as plain text with ``Content-Type: text/plain``
+* ``'json'``: Returns ``{"status": "ok"}`` with ``Content-Type: application/json``
+
+Example::
+
+    HEALTHCHECK_RESPONSE_TYPE = 'json'
+
+Usage examples
+==============
+
+Basic setup
+-----------
+
+The simplest configuration uses the defaults::
+
+    # settings.py
+    MIDDLEWARE = [
+        'django.contrib.healthcheck.HealthCheckMiddleware',
+        'django.middleware.security.SecurityMiddleware',
+        'django.contrib.sessions.middleware.SessionMiddleware',
+        'django.middleware.common.CommonMiddleware',
+        'django.middleware.csrf.CsrfViewMiddleware',
+        'django.contrib.auth.middleware.AuthenticationMiddleware',
+        'django.contrib.messages.middleware.MessageMiddleware',
+    ]
+
+    ALLOWED_HOSTS = ['example.com']
+
+With this configuration, requests to ``/-/health/`` will return ``200 OK``
+regardless of the ``Host`` header value, while all other requests will still
+be validated against ``ALLOWED_HOSTS``.
+
+Kubernetes/container deployment
+-------------------------------
+
+For Kubernetes deployments, you might want to use standard paths::
+
+    # settings.py
+    HEALTHCHECK_URL = '/healthz/'
+    HEALTHCHECK_RESPONSE_TYPE = 'json'
+
+AWS/cloud load balancer
+-----------------------
+
+Cloud load balancers often use specific paths for health checks::
+
+    # settings.py
+    HEALTHCHECK_URL = '/health/'
+    HEALTHCHECK_RESPONSE_TYPE = 'text'
+
+System checks
+=============
+
+The health check app performs the following system checks:
+
+* **healthcheck.W001**: ``HealthCheckMiddleware`` should be the first middleware
+  in ``MIDDLEWARE`` to ensure the health check endpoint bypasses
+  ``ALLOWED_HOSTS`` validation.
+
+* **healthcheck.W002**: ``HealthCheckMiddleware`` is not in ``MIDDLEWARE``. The
+  health check app requires the middleware to function.
+
+Security considerations
+=======================
+
+The health check endpoint intentionally bypasses ``ALLOWED_HOSTS`` validation.
+This is safe because:
+
+1. The endpoint only responds to a single, specific URL path.
+2. The response is minimal and contains no sensitive information.
+3. No user input is processed or reflected in the response.
+4. The endpoint does not access any Django models or databases.
+
+However, you should:
+
+* Use a unique, non-guessable URL path if you want to prevent unauthorized
+  health check probing.
+* Ensure the health check URL doesn't conflict with any application URLs.
+* Consider using network-level controls (firewalls, security groups) to
+  restrict access to the health check endpoint from untrusted networks if
+  needed.

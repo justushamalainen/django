@@ -25,6 +25,7 @@ dependencies those packages have.
    contenttypes
    flatpages
    gis/index
+   healthcheck
    humanize
    messages
    postgres/index
@@ -74,6 +75,15 @@ A world-class geospatial framework built on top of Django, that enables
 storage, manipulation and display of spatial data.
 
 See the :doc:`/ref/contrib/gis/index` documentation for more.
+
+``healthcheck``
+===============
+
+A health check endpoint that bypasses ``ALLOWED_HOSTS`` validation, essential
+for load balancers and internal monitoring systems that may not send the
+expected ``Host`` header.
+
+See the :doc:`healthcheck documentation </ref/contrib/healthcheck>`.
 
 ``humanize``
 ============
