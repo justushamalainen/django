@@ -22,3 +22,18 @@ if os.environ.get("DJORM_ENABLED", "1").strip().lower() in ("1", "true", "yes", 
     import djorm_django
 
     djorm_django.install_patches(enabled=True)
+
+    if os.environ.get("DJORM_DUMP_BAILS"):
+        import atexit
+        from djorm_django.patches import state as _djorm_state
+
+        def _dump_bails():
+            items = sorted(
+                _djorm_state.fallback_reasons.items(), key=lambda kv: -kv[1]
+            )
+            print("\n=== djorm bail histogram ===")
+            for reason, n in items:
+                print(f"  {n:>8d}  {reason}")
+            print(f"  --- total bails: {_djorm_state.fallback_calls} ---")
+
+        atexit.register(_dump_bails)
