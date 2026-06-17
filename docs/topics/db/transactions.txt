@@ -610,6 +610,115 @@ you've rolled back the transaction to a known-good savepoint within the current
 atomic block! Otherwise you're breaking atomicity and data corruption may
 occur.
 
+Marking for rollback on error
+-----------------------------
+
+.. function:: mark_for_rollback_on_error(using=None)
+
+    A context manager that marks a transaction for rollback when an exception
+    occurs, without enforcing the enclosed code to run within a transaction.
+
+    This is a low-level internal utility used by Django's ORM operations like
+    :meth:`~django.db.models.Model.save` and
+    :meth:`~django.db.models.query.QuerySet.delete`. It allows single-query
+    operations to execute efficiently in autocommit mode while still ensuring
+    proper rollback behavior when used within an :func:`atomic` block.
+
+    **Behavior:**
+
+    - **In autocommit mode (outside an atomic block):** The context manager does
+      nothing special. Any exception propagates normally, and since each query
+      is auto-committed, there's no transaction to roll back.
+
+    - **Inside an atomic block:** If an exception is raised within the context,
+      the transaction is marked with ``needs_rollback = True``. This signals
+      that the transaction must be rolled back when exiting the :func:`atomic`
+      block. Any subsequent database queries within the same atomic block will
+      raise :exc:`TransactionManagementError`.
+
+    This function is equivalent to::
+
+        connection = get_connection(using)
+        if connection.get_autocommit():
+            yield
+        else:
+            with transaction.atomic(using=using, savepoint=False):
+                yield
+
+    but it uses low-level utilities to avoid the performance overhead of
+    creating an atomic block when in autocommit mode.
+
+    **Example:**
+
+    When used within an :func:`atomic` block, exceptions trigger rollback
+    marking::
+
+        from django.db import transaction
+
+        with transaction.atomic():
+            # Some operations...
+            with transaction.mark_for_rollback_on_error():
+                # If this raises an exception, the outer transaction
+                # will be marked for rollback
+                obj.save()
+
+    In autocommit mode (the default), no special handling occurs::
+
+        # In autocommit mode - no atomic block
+        with transaction.mark_for_rollback_on_error():
+            obj.save()  # Query is auto-committed immediately
+            # If an exception occurs here, it just propagates normally
+
+    .. warning::
+
+        This is an internal API primarily intended for use by Django's ORM.
+        For application code, prefer using :func:`atomic` which provides
+        clearer semantics and proper transaction management.
+
+Exceptions
+----------
+
+.. exception:: TransactionManagementError
+
+    The :exc:`TransactionManagementError` exception is raised when transaction
+    management is used improperly. This is a subclass of
+    :exc:`~django.db.ProgrammingError`.
+
+    Common situations where this exception is raised:
+
+    - Attempting to commit, roll back, or change autocommit state while inside
+      an :func:`atomic` block::
+
+          with transaction.atomic():
+              transaction.commit()  # Raises TransactionManagementError
+
+    - Executing database queries after a transaction has been marked for
+      rollback (due to an exception) but before the :func:`atomic` block has
+      exited::
+
+          with transaction.atomic():
+              try:
+                  # This operation fails and marks the transaction for rollback
+                  obj.save()
+              except IntegrityError:
+                  # Transaction is now marked for rollback
+                  other_obj.save()  # Raises TransactionManagementError
+
+    - Calling :func:`on_commit` when autocommit is disabled and not within an
+      :func:`atomic` block.
+
+    The correct way to handle database errors is to wrap operations in nested
+    :func:`atomic` blocks, allowing the inner block to roll back while the
+    outer block continues::
+
+        with transaction.atomic():
+            try:
+                with transaction.atomic():
+                    obj.save()  # May fail
+            except IntegrityError:
+                # Inner block rolled back, but we can continue
+                handle_error()
+
 Database-specific notes
 =======================
 
